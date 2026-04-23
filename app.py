@@ -20,15 +20,9 @@ def execute():
         return jsonify({"error": "Missing 'task' field in request body."}), 400
 
     agent = SDKAgent(name=name)
-    # Capture output
-    import io, sys
-    buffer = io.StringIO()
-    sys.stdout = buffer
-    agent.execute(task)
-    sys.stdout = sys.__stdout__
-    output = buffer.getvalue()
+    output = agent.execute(task)
 
-    return jsonify({"agent": name, "task": task, "output": output.strip()})
+    return jsonify({"agent": name, "task": task, "output": output})
 
 
 if __name__ == "__main__":
