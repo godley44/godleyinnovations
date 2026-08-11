@@ -1,0 +1,25 @@
+# Runs the same `npm run check` + build that should be run before every push,
+# so a push from a tablet (where nothing can be run locally) still gets
+# checked before it reaches main / Vercel.
+name: checks
+on:
+  push:
+  pull_request:
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+        env:
+          # Placeholder values so the production build compiles; the real
+          # values live only in Vercel project settings.
+          VITE_SUPABASE_URL: ""
+          VITE_SUPABASE_ANON_KEY: ""
