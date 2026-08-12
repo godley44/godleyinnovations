@@ -66,3 +66,9 @@ guard script so it can't happen twice.
   after being run.
 - `src/lib/dbErrors.ts` — turns database errors into plain instructions.
 - `scripts/` — the guard scripts behind `npm run check`.
+- `services/ai-mesh-bot/` — Slack bot routing @mentions to AI personas; see
+  its README. Only its `claude` persona may write to the OS, via the
+  `os-ingest` function below.
+- `supabase/functions/os-ingest/` — server-side write path into the OS for
+  trusted automation, gated by a secret that lives only in Supabase function
+  secrets. The service-role key is used here and nowhere else.
