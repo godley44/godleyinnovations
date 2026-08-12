@@ -26,3 +26,32 @@ jobs:
           VITE_SUPABASE_ANON_KEY: "placeholder-anon-key"
       # Assert the built bundle actually contains the app (see script header).
       - run: node scripts/check-bundle.mjs
+
+  # The migrations are applied by hand in production, so CI is the only place
+  # the SQL executes before the real database. Applies every migration in
+  # order to a real Postgres 16, then runs the behavioral pipeline test
+  # (apply_proposal, double-apply block, RLS isolation).
+  sql-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply migrations and run pipeline test
+        env:
+          PGURL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          psql "$PGURL" -v ON_ERROR_STOP=1 -f supabase/tests/shim.sql
+          for f in supabase/migrations/*.sql; do
+            echo "== applying $f"
+            psql "$PGURL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+          psql "$PGURL" -v ON_ERROR_STOP=1 -f supabase/tests/pipeline_test.sql
