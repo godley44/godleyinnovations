@@ -135,6 +135,21 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .stat-value { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stat-label { font-size: 0.8rem; color: var(--muted); }
 
+.approvals { border-color: #fde68a; background: #fffdf5; }
+.approval-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.approval-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.approval-desc { margin: 0; }
+.approval-meta { font-size: 0.8rem; }
+.approval-actions { display: flex; gap: 6px; align-items: center; }
+
 .auth-wrap { max-width: 420px; margin: 10vh auto; padding: 16px; }
 .auth-form { display: grid; gap: 10px; margin: 16px 0; }
 .auth-form label { display: grid; gap: 4px; }

@@ -119,8 +119,40 @@ for (const mod of MODULES) {
   }
 }
 
+// Beyond the module config: every table (.from("x")) and database function
+// (.rpc("y")) referenced anywhere in app or edge-function code must be
+// created by a migration. Catches the screen-with-no-table-behind-it class
+// of bug for code that doesn't go through the module config.
+const createdFunctions = new Set(
+  [...sql.matchAll(/create (?:or replace )?function (?:public\.)?(\w+)/gi)].map((m) =>
+    m[1].toLowerCase(),
+  ),
+);
+
+function sourceFiles(dir) {
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile() && /\.(ts|tsx|js|mjs)$/.test(e.name))
+    .map((e) => join(e.parentPath ?? e.path, e.name));
+}
+const code = [...sourceFiles(join(root, "src")), ...sourceFiles(join(root, "supabase", "functions"))]
+  .map((f) => readFileSync(f, "utf8"))
+  .join("\n");
+
+for (const m of code.matchAll(/\.from\(\s*"([a-z_]+)"/g)) {
+  if (!createdTables.has(m[1])) {
+    failures.push(`code references table "${m[1]}" but no migration creates it`);
+  }
+}
+for (const m of code.matchAll(/\.rpc\(\s*"([a-z_]+)"/g)) {
+  if (!createdFunctions.has(m[1])) {
+    failures.push(`code calls database function "${m[1]}" but no migration creates it`);
+  }
+}
+
 if (failures.length > 0) {
   console.error("check-config FAILED:\n" + failures.map((f) => `  - ${f}`).join("\n"));
   process.exit(1);
 }
-console.log(`check-config OK: ${MODULES.length} modules validated against migrations.`);
+console.log(
+  `check-config OK: ${MODULES.length} modules + all table/function references validated against migrations.`,
+);

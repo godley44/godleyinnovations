@@ -1,5 +1,11 @@
-// os-ingest: the server-side write path into the Godley Innovations OS for
+// os-ingest: the server-side entry point into the Godley Innovations OS for
 // trusted automation (today: the AI Mesh Bot's claude persona).
+//
+// Since migration 002, this function does NOT write to the ledger, tickets,
+// or notes directly. It files a PROPOSAL row; the owner approves or rejects
+// it in the app, and approval (apply_proposal in the database) is what
+// actually writes. Automation drafts, the human signs — that boundary is the
+// point, don't route around it.
 //
 // Deploy:   supabase functions deploy os-ingest --no-verify-jwt
 // Secret:   supabase secrets set OS_WEBHOOK_SECRET=<long random string>
@@ -7,27 +13,26 @@
 //           secret, not a Supabase user JWT; the secret check below is the
 //           gate, and it runs before anything else.)
 //
-// This function uses the service-role key (injected by Supabase, bypasses
-// RLS). That is safe here and only here: this code runs server-side, the
-// key never reaches a browser, and every request must present the shared
-// secret first. Nothing in the frontend ever talks to this function.
+// The service-role key (injected by Supabase, bypasses RLS) is used only to
+// insert the proposal row. That is safe here and only here: this code runs
+// server-side, the key never reaches a browser, and every request must
+// present the shared secret first.
 //
 // Payload contract (POST, Authorization: Bearer <OS_WEBHOOK_SECRET>):
 //   { "venture_slug": "lil-bull",
 //     "action": "ledger.add" | "ticket.add" | "note.append",
+//     "source": "optional label of who proposed this (defaults 'automation')",
 //     "data": { ... } }
 //
 //   ledger.add  data: { amount_cents (int, +in/-out), category?, occurred_on?,
 //                       counterparty?, item?, note? }
 //   ticket.add  data: { subject, customer?, channel?, opened_on? }
-//   note.append data: { text }   -- appends a dated line to the venture's
-//                                   notes; append-only so automation can
-//                                   never erase what a human wrote.
+//   note.append data: { text }
 //
-// Allowed categories/columns are NOT re-validated here beyond basic shape:
-// the database CHECK constraints are the single source of truth for what
-// values are legal, and their errors are returned verbatim. Duplicating the
-// lists here is exactly the two-places-disagree trap the OS is built to avoid.
+// Shape is validated here so a garbage proposal is rejected at the door with
+// a clear error; VALUE rules (allowed categories etc.) are not duplicated
+// here — the database CHECK constraints stay the single source of truth and
+// reject bad values at approval time.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -62,6 +67,24 @@ Deno.serve(async (req) => {
     return reply(400, { ok: false, error: "venture_slug and action are required" });
   }
 
+  // Shape checks per action — catch broken automation immediately instead of
+  // filing a proposal that can never be applied.
+  if (action === "ledger.add" && !Number.isInteger(data.amount_cents)) {
+    return reply(400, { ok: false, error: "data.amount_cents must be an integer (cents, +in/-out)" });
+  }
+  if (action === "ticket.add" && (typeof data.subject !== "string" || !data.subject.trim())) {
+    return reply(400, { ok: false, error: "data.subject is required" });
+  }
+  if (action === "note.append" && (typeof data.text !== "string" || !data.text.trim())) {
+    return reply(400, { ok: false, error: "data.text is required" });
+  }
+  if (!["ledger.add", "ticket.add", "note.append"].includes(action)) {
+    return reply(400, {
+      ok: false,
+      error: `unknown action "${action}" (expected ledger.add, ticket.add, or note.append)`,
+    });
+  }
+
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -69,75 +92,41 @@ Deno.serve(async (req) => {
 
   const venture = await supabase
     .from("ventures")
-    .select("id, notes, name")
+    .select("id, name")
     .eq("slug", ventureSlug)
     .maybeSingle();
   if (venture.error) return reply(500, { ok: false, error: venture.error.message });
   if (!venture.data) {
     return reply(404, { ok: false, error: `no venture with slug "${ventureSlug}"` });
   }
-  const ventureId = venture.data.id as string;
 
-  switch (action) {
-    case "ledger.add": {
-      if (!Number.isInteger(data.amount_cents)) {
-        return reply(400, { ok: false, error: "data.amount_cents must be an integer (cents, +in/-out)" });
-      }
-      const { data: row, error } = await supabase
-        .from("money_ledger")
-        .insert({
-          venture_id: ventureId,
-          amount_cents: data.amount_cents,
-          category: data.category ?? "other",
-          occurred_on: data.occurred_on ?? undefined, // DB defaults to today
-          counterparty: data.counterparty ?? null,
-          item: data.item ?? null,
-          note: data.note ?? null,
-        })
-        .select("id")
-        .single();
-      if (error) return reply(400, { ok: false, error: error.message });
-      return reply(200, { ok: true, id: row.id });
-    }
+  const { data: row, error } = await supabase
+    .from("proposals")
+    .insert({
+      venture_id: venture.data.id,
+      action,
+      payload: data,
+      proposed_by: typeof payload.source === "string" && payload.source ? payload.source : "automation",
+    })
+    .select("id")
+    .single();
 
-    case "ticket.add": {
-      if (typeof data.subject !== "string" || !data.subject.trim()) {
-        return reply(400, { ok: false, error: "data.subject is required" });
-      }
-      const { data: row, error } = await supabase
-        .from("support_tickets")
-        .insert({
-          venture_id: ventureId,
-          subject: data.subject.trim(),
-          customer: data.customer ?? null,
-          channel: data.channel ?? null,
-          opened_on: data.opened_on ?? undefined,
-        })
-        .select("id")
-        .single();
-      if (error) return reply(400, { ok: false, error: error.message });
-      return reply(200, { ok: true, id: row.id });
-    }
-
-    case "note.append": {
-      if (typeof data.text !== "string" || !data.text.trim()) {
-        return reply(400, { ok: false, error: "data.text is required" });
-      }
-      const stamp = new Date().toISOString().slice(0, 10);
-      const line = `[${stamp}] ${data.text.trim()}`;
-      const existing = (venture.data.notes as string | null) ?? "";
-      const { error } = await supabase
-        .from("ventures")
-        .update({ notes: existing ? `${existing}\n${line}` : line })
-        .eq("id", ventureId);
-      if (error) return reply(400, { ok: false, error: error.message });
-      return reply(200, { ok: true });
-    }
-
-    default:
-      return reply(400, {
+  if (error) {
+    // The function can be deployed ahead of the database (deploys and
+    // migrations are both manual, in either order). Say exactly what to do.
+    if (error.code === "42P01") {
+      return reply(500, {
         ok: false,
-        error: `unknown action "${action}" (expected ledger.add, ticket.add, or note.append)`,
+        error: "the proposals table doesn't exist yet — run supabase/migrations/002_proposals.sql in the SQL editor",
       });
+    }
+    return reply(400, { ok: false, error: error.message });
   }
+
+  return reply(200, {
+    ok: true,
+    id: row.id,
+    status: "pending",
+    note: `proposal filed for "${venture.data.name}" — awaiting approval in the OS app`,
+  });
 });

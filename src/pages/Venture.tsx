@@ -4,6 +4,7 @@ import { MODULES } from "../modules/config.ts";
 import { supabase } from "../lib/supabase";
 import { explainDbError } from "../lib/dbErrors";
 import { RecordSection } from "../components/RecordSection";
+import { ApprovalsCard } from "../components/ApprovalsCard";
 import { OverviewTab } from "./tabs/OverviewTab";
 import { VentureDetails } from "./tabs/VentureDetails";
 
@@ -95,6 +96,7 @@ export function Venture() {
 
       {activeTab === "overview" ? (
         <>
+          <ApprovalsCard ventureId={venture.id} />
           <OverviewTab ventureId={venture.id} />
           <VentureDetails venture={venture} onChanged={load} />
         </>

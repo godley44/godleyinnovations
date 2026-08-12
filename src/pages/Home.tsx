@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { explainDbError } from "../lib/dbErrors";
 import { formatCents } from "../lib/format";
+import { ApprovalsCard } from "../components/ApprovalsCard";
 
 interface VentureRow {
   id: string;
@@ -105,6 +106,8 @@ export function Home() {
           Sign out
         </button>
       </header>
+
+      <ApprovalsCard />
 
       <div className="card-head">
         <h2>Ventures</h2>

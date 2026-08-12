@@ -19,7 +19,10 @@ jobs:
       - run: npm run check
       - run: npm run build
         env:
-          # Placeholder values so the production build compiles; the real
-          # values live only in Vercel project settings.
-          VITE_SUPABASE_URL: ""
-          VITE_SUPABASE_ANON_KEY: ""
+          # Non-empty placeholders, not "": with an empty/undefined URL the
+          # bundler proves the supabase client is always null and tree-shakes
+          # the whole app out of the bundle. Real values live only in Vercel.
+          VITE_SUPABASE_URL: "https://placeholder.supabase.co"
+          VITE_SUPABASE_ANON_KEY: "placeholder-anon-key"
+      # Assert the built bundle actually contains the app (see script header).
+      - run: node scripts/check-bundle.mjs

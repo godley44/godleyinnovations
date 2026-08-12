@@ -3,6 +3,16 @@
 The operating system for the studio: one workspace ("folder") per venture,
 each tracking financials, sales, advertising, social, websites, and support.
 
+Works as a phone app: open the deployed URL on your phone and use
+"Add to Home Screen" (Share menu on iOS, browser menu on Android) — it
+installs with its own icon and runs full-screen. Same app, same database.
+
+AI agents (via the Slack mesh bot and `os-ingest`) never write to the books
+directly: their writes land as **pending proposals**, and the "Needs your
+approval" inbox at the top of the app is where you approve or reject them —
+in real time, on the phone. Approving runs `apply_proposal()` in the
+database, which performs the write and flips the status in one transaction.
+
 Built for one operator working from a tablet in short sessions, with the app
 sometimes ahead of the hand-run database. Ground rules live in the code:
 every fact in one place, derived numbers never stored, secrets never in the

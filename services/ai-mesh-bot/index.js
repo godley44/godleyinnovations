@@ -212,7 +212,10 @@ async function handleTurn(event) {
   if (bridge.osUpdate) {
     if (persona === "claude" && PERSONAS[persona].canWriteOS) {
       try {
-        await writeToOS(bridge.osUpdate);
+        const result = await writeToOS(bridge.osUpdate);
+        // OS writes land as pending proposals (migration 002); say so in the
+        // thread so the human knows there's a decision waiting on their phone.
+        await postToThread(channel, threadTs, `📥 ${result.note ?? "Proposal filed — approve it in the OS app."}`);
       } catch (err) {
         await postToThread(channel, threadTs, `Reply posted, but the OS update failed: ${err.message}`);
       }
