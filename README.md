@@ -83,3 +83,10 @@ guard script so it can't happen twice.
   trusted automation, gated by a secret that lives only in Supabase function
   secrets. The service-role key is used here and nowhere else. Deployed at
   `https://jvsrlcfkotvmvyxiniid.supabase.co/functions/v1/os-ingest`.
+- `supabase/functions/claude-bridge/` — the mesh bot's claude persona: takes
+  a Slack instruction, calls the Claude API, returns `{ reply, osUpdate }`.
+  Proposes only — the router decides what gets filed and for which venture.
+- `supabase/functions/weekly-insight/` — drafts a weekly market-insight note
+  (with live web search) and files it through `os-ingest` as a pending
+  proposal. Scheduled by migration 003 (pg_cron, Mondays 13:00 UTC); secrets
+  come from Vault at each firing.

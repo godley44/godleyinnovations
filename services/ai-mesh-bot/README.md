@@ -36,6 +36,11 @@ Each persona's webhook (`CLAUDE_WEBHOOK_URL`, `CHATGPT_WEBHOOK_URL`,
 `GEMINI_WEBHOOK_URL`, `LINDY_WEBHOOK_URL` in the environment) is a small
 service that actually calls the model API. `index.js` sends and expects:
 
+Bridge calls are authenticated: when `BRIDGE_SHARED_SECRET` is set, `index.js`
+sends it as `Authorization: Bearer <secret>` and every bridge must verify it
+before doing anything else. Bridges are public URLs that spend model tokens —
+the secret is the lock.
+
 **Request body (POST from index.js → bridge):**
 
 ```json
@@ -60,6 +65,25 @@ service that actually calls the model API. `index.js` sends and expects:
 A persona whose webhook URL env var is unset is simply not routable yet —
 the bot says so in the thread instead of failing silently.
 
+The claude bridge is implemented as the `claude-bridge` Supabase Edge
+Function (`supabase/functions/claude-bridge/`), deployed at
+`https://jvsrlcfkotvmvyxiniid.supabase.co/functions/v1/claude-bridge` —
+that is the value for `CLAUDE_WEBHOOK_URL`. It calls the Claude API
+(`ANTHROPIC_API_KEY` lives in Supabase function secrets, server-side only)
+and returns `{ reply, osUpdate }`. It never touches the database itself.
+
+### Channel → venture routing
+
+`CHANNEL_VENTURES` maps Slack channel IDs to venture slugs
+(`CHANNEL_VENTURES="C0123ABCDEF=lil-bull,C0456GHI=acme"`). The channel a
+message came from decides which venture an OS write lands on — never the
+model: `index.js` overwrites whatever `venture_slug` a bridge proposed with
+the channel's mapping, and an unmapped channel gets a plain "this channel
+isn't mapped to a venture" reply instead of a guess. Enforced by
+`scripts/check-mesh-bot.mjs` (GUARD:channel-venture-map), same as the other
+two invariants. Find a channel's ID in Slack: channel name → View channel
+details → the ID at the bottom.
+
 ### OS webhook
 
 `GODLEY_OS_WEBHOOK_URL` points at the `os-ingest` Supabase Edge Function
@@ -73,8 +97,9 @@ the secret set on the function.
 ### Build order
 
 1. ~~Router (this service) + OS webhook~~ — built.
-2. Claude bridge (has OS write access — get it right and tested in Slack
-   before moving on).
+2. ~~Claude bridge~~ — built (`supabase/functions/claude-bridge/`), plus
+   channel→venture routing in the router. Needs live Slack testing once the
+   router is hosted.
 3. ChatGPT / Gemini / Lindy bridges — same contract, lower stakes, follow
    the Claude bridge's pattern once it's proven.
 4. Handoff parsing (one AI's reply auto-triggering another via
@@ -89,10 +114,16 @@ the secret set on the function.
    one file, `node index.js`, listens on `$PORT`). Set env vars there:
    - `SLACK_SIGNING_SECRET` — Slack app → Basic Information
    - `SLACK_BOT_TOKEN` — Slack app → OAuth (starts `xoxb-`)
-   - `CLAUDE_WEBHOOK_URL` (+ the other three when their bridges exist)
+   - `CLAUDE_WEBHOOK_URL` —
+     `https://jvsrlcfkotvmvyxiniid.supabase.co/functions/v1/claude-bridge`
+     (+ the other three when their bridges exist)
+   - `BRIDGE_SHARED_SECRET` — must match the secret set on the bridge function
    - `GODLEY_OS_WEBHOOK_URL` —
      `https://jvsrlcfkotvmvyxiniid.supabase.co/functions/v1/os-ingest`
    - `OS_WEBHOOK_SECRET` — must match the secret set on the function
+   - `CHANNEL_VENTURES` — Slack channel ID → venture slug map (see
+     "Channel → venture routing" above); OS writes only work from mapped
+     channels
 3. Point the Slack app's event Request URL at `https://<host>/slack/events`.
    The bot answers Slack's URL-verification challenge automatically.
 
