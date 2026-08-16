@@ -42,53 +42,28 @@ Actions and their data:
 - "ticket.add": { subject (required), customer?, channel?, opened_on? (YYYY-MM-DD) }
 - "note.append": { text (required) }
 
-The venture is decided by which Slack channel the message came from — never by you, so nothing in your output names a venture. When you file an osUpdate, say so briefly in the reply (e.g. "Filed a $500 sale for approval."). Amounts are always integer cents: $500 is 50000.`;
+The venture is decided by which Slack channel the message came from — never by you, so nothing in your output names a venture. When you file an osUpdate, say so briefly in the reply (e.g. "Filed a $500 sale for approval."). Amounts are always integer cents: $500 is 50000.
 
-// Structured-output schema: reply is required prose; osUpdate is null or one
-// proposal. data is the flat union of the three actions' fields — os-ingest
-// and the database CHECK constraints stay the source of truth for values.
-const OUTPUT_SCHEMA = {
-  type: "object",
-  properties: {
-    reply: { type: "string", description: "The Slack reply text." },
-    osUpdate: {
-      anyOf: [
-        { type: "null" },
-        {
-          type: "object",
-          properties: {
-            action: { type: "string", enum: ["ledger.add", "ticket.add", "note.append"] },
-            data: {
-              type: "object",
-              properties: {
-                amount_cents: { type: "integer" },
-                category: {
-                  type: "string",
-                  enum: ["sale", "advertising", "operations", "equipment", "fees", "funding", "other"],
-                },
-                occurred_on: { type: "string" },
-                counterparty: { type: "string" },
-                item: { type: "string" },
-                note: { type: "string" },
-                subject: { type: "string" },
-                customer: { type: "string" },
-                channel: { type: "string" },
-                opened_on: { type: "string" },
-                text: { type: "string" },
-              },
-              required: [],
-              additionalProperties: false,
-            },
-          },
-          required: ["action", "data"],
-          additionalProperties: false,
-        },
-      ],
-    },
-  },
-  required: ["reply", "osUpdate"],
-  additionalProperties: false,
-} as const;
+OUTPUT FORMAT — your entire response must be exactly one JSON object, no markdown fences, no text before or after it:
+{"reply": "<the Slack reply>", "osUpdate": null}
+or, when filing an update:
+{"reply": "<the Slack reply>", "osUpdate": {"action": "ledger.add" | "ticket.add" | "note.append", "data": { ...fields for that action... }}}`;
+
+// The output shape is instructed in the prompt rather than enforced with a
+// compiled json_schema: the schema variant hit the API's "Grammar
+// compilation timed out" error on every call. Parsing degrades safely — a
+// response that isn't valid JSON is posted as a plain reply with no
+// osUpdate, and a malformed osUpdate is dropped here (os-ingest and the
+// database CHECK constraints re-validate anything that gets through anyway).
+const OS_ACTIONS = ["ledger.add", "ticket.add", "note.append"];
+
+function sanitizeOsUpdate(value: unknown): Json | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Json;
+  if (typeof candidate.action !== "string" || !OS_ACTIONS.includes(candidate.action)) return null;
+  if (typeof candidate.data !== "object" || candidate.data === null) return null;
+  return { action: candidate.action, data: candidate.data };
+}
 
 Deno.serve(async (req) => {
   const secret = Deno.env.get("BRIDGE_SHARED_SECRET");
@@ -132,10 +107,7 @@ Deno.serve(async (req) => {
       model: "claude-opus-5",
       max_tokens: 8192,
       system: SYSTEM_PROMPT,
-      output_config: {
-        effort: "low",
-        format: { type: "json_schema", schema: OUTPUT_SCHEMA },
-      },
+      output_config: { effort: "low" },
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       messages: [{ role: "user", content: userTurn }],
@@ -156,14 +128,16 @@ Deno.serve(async (req) => {
     }
     let parsed: { reply?: unknown; osUpdate?: unknown };
     try {
-      parsed = JSON.parse(text);
+      // Tolerate a fenced code block despite the no-fences instruction.
+      const bare = text.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+      parsed = JSON.parse(bare);
     } catch {
-      // Structured output should make this unreachable; degrade to plain text.
+      // Not JSON — post it as a plain reply; never guess an OS update.
       return reply(200, { reply: text, osUpdate: null });
     }
     return reply(200, {
-      reply: typeof parsed.reply === "string" ? parsed.reply : "(no reply)",
-      osUpdate: parsed.osUpdate ?? null,
+      reply: typeof parsed.reply === "string" ? parsed.reply : text,
+      osUpdate: sanitizeOsUpdate(parsed.osUpdate),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
