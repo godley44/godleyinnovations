@@ -101,7 +101,7 @@ export function Home() {
   return (
     <div className="page">
       <header className="topbar">
-        <h1>Godley Innovations</h1>
+        <h1>Godley Innovations Studio</h1>
         <button className="linklike" onClick={() => void signOut()}>
           Sign out
         </button>

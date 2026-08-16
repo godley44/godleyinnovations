@@ -5,7 +5,7 @@ import { missingEnvVars } from "../lib/supabase";
 export function SetupScreen() {
   return (
     <div className="auth-wrap">
-      <h1>Godley Innovations OS</h1>
+      <h1>Godley Innovations Studio</h1>
       <p>
         The app is deployed but not connected to a database yet. Missing
         environment variable{missingEnvVars.length > 1 ? "s" : ""}:

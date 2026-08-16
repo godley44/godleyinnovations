@@ -54,7 +54,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (!session) {
     return (
       <div className="auth-wrap">
-        <h1>Godley Innovations OS</h1>
+        <h1>Godley Innovations Studio</h1>
         {stage === "email" ? (
           <form onSubmit={sendCode} className="auth-form">
             <label>
