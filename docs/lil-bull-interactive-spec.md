@@ -55,6 +55,16 @@ Same computed-data rule; files to the OS only as a proposal if asked.
 pulse") — same voice and disclaimers as the weekly brief, built from the
 same computed data.
 
+### 8. Bot performance panel (venture page)
+**Explicitly not built until the trading bot exists** — listed so the
+lil-bull page design leaves room for it. A card on the lil-bull venture page
+showing: P&L (realized and open, integer cents like everything else), win
+rate, and open positions. Fed by a future `trades` table (its own numbered
+migration when the time comes: entries, exits, sizes, timestamps — facts
+only; P&L and win rate derived, never stored, per house rules). The page's
+lead-card slot system (`src/modules/ventureLayout.ts` on main) is where it
+plugs in, under the Weekly Brief.
+
 ## Sequencing note
 
 These land with the Slack phase (router already supports the claude persona
