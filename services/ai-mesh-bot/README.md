@@ -64,7 +64,8 @@ the bot says so in the thread instead of failing silently.
 
 `GODLEY_OS_WEBHOOK_URL` points at the `os-ingest` Supabase Edge Function
 (`supabase/functions/os-ingest/`), which writes to the same database the
-app uses. The tracking layer is Supabase — decided, since the OS already
+app uses. The deployed endpoint is
+`https://jvsrlcfkotvmvyxiniid.supabase.co/functions/v1/os-ingest`. The tracking layer is Supabase — decided, since the OS already
 lives there. See that function's comments for the payload shape
 (`ledger.add`, `ticket.add`, `note.append`). `OS_WEBHOOK_SECRET` must match
 the secret set on the function.
@@ -89,7 +90,9 @@ the secret set on the function.
    - `SLACK_SIGNING_SECRET` — Slack app → Basic Information
    - `SLACK_BOT_TOKEN` — Slack app → OAuth (starts `xoxb-`)
    - `CLAUDE_WEBHOOK_URL` (+ the other three when their bridges exist)
-   - `GODLEY_OS_WEBHOOK_URL`, `OS_WEBHOOK_SECRET`
+   - `GODLEY_OS_WEBHOOK_URL` —
+     `https://jvsrlcfkotvmvyxiniid.supabase.co/functions/v1/os-ingest`
+   - `OS_WEBHOOK_SECRET` — must match the secret set on the function
 3. Point the Slack app's event Request URL at `https://<host>/slack/events`.
    The bot answers Slack's URL-verification challenge automatically.
 

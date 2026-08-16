@@ -81,4 +81,5 @@ guard script so it can't happen twice.
   `os-ingest` function below.
 - `supabase/functions/os-ingest/` — server-side write path into the OS for
   trusted automation, gated by a secret that lives only in Supabase function
-  secrets. The service-role key is used here and nowhere else.
+  secrets. The service-role key is used here and nowhere else. Deployed at
+  `https://jvsrlcfkotvmvyxiniid.supabase.co/functions/v1/os-ingest`.
