@@ -4,7 +4,9 @@ import { MODULES } from "../modules/config.ts";
 import { supabase } from "../lib/supabase";
 import { explainDbError } from "../lib/dbErrors";
 import { RecordSection } from "../components/RecordSection";
-import { ApprovalsCard } from "../components/ApprovalsCard";
+import { PendingChip } from "../components/PendingChip";
+import { WeeklyBriefCard } from "../components/WeeklyBriefCard";
+import { VENTURE_LEAD_CARDS } from "../modules/ventureLayout.ts";
 import { OverviewTab } from "./tabs/OverviewTab";
 import { VentureDetails } from "./tabs/VentureDetails";
 
@@ -73,7 +75,8 @@ export function Venture() {
             ← All ventures
           </Link>
           <h1>
-            {venture.name} <span className={`chip chip-${venture.status}`}>{venture.status}</span>
+            {venture.name} <span className={`chip chip-${venture.status}`}>{venture.status}</span>{" "}
+            <PendingChip ventureId={venture.id} />
           </h1>
           {venture.thesis && <p className="muted">{venture.thesis}</p>}
         </div>
@@ -96,7 +99,9 @@ export function Venture() {
 
       {activeTab === "overview" ? (
         <>
-          <ApprovalsCard ventureId={venture.id} />
+          {(VENTURE_LEAD_CARDS[venture.slug] ?? []).includes("weekly-brief") && (
+            <WeeklyBriefCard ventureId={venture.id} />
+          )}
           <OverviewTab ventureId={venture.id} />
           <VentureDetails venture={venture} onChanged={load} />
         </>

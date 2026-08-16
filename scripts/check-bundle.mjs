@@ -31,7 +31,9 @@ try {
 const failures = [];
 
 // Sentinels from distinct corners of the real app; all must survive bundling.
-for (const sentinel of ["Needs your approval", "apply_proposal", "money_ledger", "app is deployed but not connected"]) {
+// ("Nothing needs your approval" replaced "Needs your approval" when the
+// approvals inbox became always-visible with an empty state.)
+for (const sentinel of ["Nothing needs your approval", "apply_proposal", "money_ledger", "app is deployed but not connected", "No brief yet"]) {
   if (!js.includes(sentinel)) {
     failures.push(
       `bundle is missing "${sentinel}" — the app was likely tree-shaken away (build without VITE_SUPABASE_URL set?)`,

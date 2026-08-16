@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { explainDbError } from "../lib/dbErrors";
 import { formatCents } from "../lib/format";
@@ -8,6 +9,10 @@ import { formatCents } from "../lib/format";
 // database, which does the actual write and flips the status in one
 // transaction. Nothing an agent produces touches the books until a human
 // taps Approve — that boundary is the reason this card exists.
+//
+// The section is ALWAYS visible (empty state included) so the inbox has a
+// fixed home the thumb can find — it used to render nothing when empty,
+// which read as "this feature doesn't exist".
 
 interface Proposal {
   id: string;
@@ -20,7 +25,7 @@ interface Proposal {
   ventures: { name: string; slug: string } | null;
 }
 
-function describe(p: Proposal): string {
+function summarize(p: Proposal): string {
   const d = p.payload;
   switch (p.action) {
     case "ledger.add": {
@@ -37,7 +42,7 @@ function describe(p: Proposal): string {
     case "ticket.add":
       return `Open ticket: ${String(d.subject ?? "")}${d.customer ? ` (from ${String(d.customer)})` : ""}`;
     case "note.append":
-      return `Add note: ${String(d.text ?? "")}`;
+      return "Add note:";
     default:
       // Unknown action: still shown (never hidden), just raw. apply_proposal
       // will refuse it with a clear error if approved.
@@ -45,11 +50,21 @@ function describe(p: Proposal): string {
   }
 }
 
+function when(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export function ApprovalsCard({ ventureId }: { ventureId?: string }) {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [justApproved, setJustApproved] = useState<Proposal | null>(null);
 
   const load = useCallback(async () => {
     if (!supabase) return;
@@ -61,10 +76,7 @@ export function ApprovalsCard({ ventureId }: { ventureId?: string }) {
     if (ventureId) query = query.eq("venture_id", ventureId);
     const { data, error } = await query;
     if (error) {
-      // Migration 002 not run yet: this whole feature quietly doesn't exist
-      // rather than shouting on every screen — the card explains itself only
-      // if there are no other problems worth the space.
-      setError(error.code === "42P01" ? null : explainDbError(error));
+      setError(explainDbError(error));
       setProposals([]);
     } else {
       setError(null);
@@ -77,10 +89,9 @@ export function ApprovalsCard({ ventureId }: { ventureId?: string }) {
     void load();
 
     if (!supabase) return;
-    // Realtime: a proposal filed from Slack should appear on the phone while
-    // you're looking at the screen. Best-effort — if the subscription drops,
-    // the visibilitychange refetch below still keeps the list honest every
-    // time the phone screen comes back to this app.
+    // Realtime: a proposal filed from automation should appear while you're
+    // looking at the screen. Best-effort — the visibilitychange refetch below
+    // keeps the list honest every time the phone comes back to this app.
     const channel = supabase
       .channel(`proposals-${ventureId ?? "all"}`)
       .on(
@@ -111,6 +122,7 @@ export function ApprovalsCard({ ventureId }: { ventureId?: string }) {
       setError(explainDbError(error));
       return;
     }
+    setJustApproved(p);
     await load();
   }
 
@@ -131,42 +143,59 @@ export function ApprovalsCard({ ventureId }: { ventureId?: string }) {
     await load();
   }
 
-  // No pending items and no error: render nothing. The inbox earns screen
-  // space only when there is a decision to make.
-  if (loaded && proposals.length === 0 && !error) return null;
-
   return (
-    <section className="card approvals">
+    <section className="card approvals" id="approvals">
       <h3>
-        Needs your approval{" "}
+        Approvals{" "}
         {proposals.length > 0 && <span className="chip chip-paused">{proposals.length}</span>}
       </h3>
       {error && <p className="error-banner">{error}</p>}
-      <ul className="approval-list">
-        {proposals.map((p) => (
-          <li key={p.id} className="approval-item">
-            <div>
-              <p className="approval-desc">{describe(p)}</p>
-              <p className="muted approval-meta">
-                {!ventureId && p.ventures ? `${p.ventures.name} · ` : ""}
-                proposed by {p.proposed_by}
-              </p>
-            </div>
-            <div className="approval-actions">
-              <button disabled={busyId === p.id} onClick={() => void approve(p)}>
-                Approve
-              </button>
-              <button
-                className="linklike danger"
-                disabled={busyId === p.id}
-                onClick={() => void reject(p)}
-              >
-                Reject
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+      {justApproved && justApproved.ventures && (
+        <p className="approved-note">
+          Approved.{" "}
+          {justApproved.action === "note.append" ? (
+            <Link to={`/v/${justApproved.ventures.slug}`}>
+              View in {justApproved.ventures.name} notes →
+            </Link>
+          ) : (
+            <Link to={`/v/${justApproved.ventures.slug}`}>
+              View {justApproved.ventures.name} →
+            </Link>
+          )}
+        </p>
+      )}
+      {loaded && proposals.length === 0 && !error ? (
+        <p className="muted">Nothing needs your approval.</p>
+      ) : (
+        <ul className="approval-list">
+          {proposals.map((p) => (
+            <li key={p.id} className="approval-item">
+              <div className="approval-body">
+                <p className="approval-desc">{summarize(p)}</p>
+                {p.action === "note.append" && (
+                  <p className="approval-payload prewrap">{String(p.payload.text ?? "")}</p>
+                )}
+                <p className="muted approval-meta">
+                  {!ventureId && p.ventures ? `${p.ventures.name} · ` : ""}
+                  {p.proposed_by} · {when(p.created_at)}
+                </p>
+              </div>
+              <div className="approval-actions">
+                <button disabled={busyId === p.id} onClick={() => void approve(p)}>
+                  Approve
+                </button>
+                <button
+                  className="linklike danger"
+                  disabled={busyId === p.id}
+                  onClick={() => void reject(p)}
+                >
+                  Reject
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

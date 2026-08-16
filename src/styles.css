@@ -146,9 +146,31 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
   border-top: 1px solid var(--line);
   padding-top: 10px;
 }
+.approval-body { min-width: 0; flex: 1 1 240px; }
 .approval-desc { margin: 0; }
+.approval-payload {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.92rem;
+  max-height: 45vh;
+  overflow-y: auto;
+}
 .approval-meta { font-size: 0.8rem; }
 .approval-actions { display: flex; gap: 6px; align-items: center; }
+.approved-note { margin: 4px 0 10px; }
+
+/* Weekly Brief card: full text, one-tap copy, collapsible history. */
+.brief-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.brief-date { margin: 2px 0 6px; font-size: 0.8rem; }
+.brief-text { margin: 0 0 6px; font-size: 0.95rem; }
+.brief-history summary { cursor: pointer; color: var(--accent); padding: 6px 0; }
+.brief-history-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+.brief-history-list li { border-top: 1px solid var(--line); padding-top: 8px; }
+
+.chip-link { text-decoration: none; }
 
 .auth-wrap { max-width: 420px; margin: 10vh auto; padding: 16px; }
 .auth-form { display: grid; gap: 10px; margin: 16px 0; }
