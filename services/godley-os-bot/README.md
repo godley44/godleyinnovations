@@ -66,6 +66,10 @@ npm run dev            # tsx watch src/index.ts
 npm run build && npm start   # what Render runs
 ```
 
+`.env` is auto-loaded when it exists (Node's built-in loader, needs Node
+20.12+); on Render there is no `.env` and the dashboard-injected environment
+is used as-is.
+
 ## Deploy to Render
 
 1. Push this service to a GitHub repo Render can see (its own repo is
