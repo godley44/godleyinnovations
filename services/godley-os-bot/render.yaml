@@ -1,8 +1,9 @@
-# Render blueprint for godley-os-bot: one always-on Node web service.
-# Render auto-detects this file when it sits at the ROOT of the connected
-# repo. If you connect the godleyinnovations monorepo instead of a dedicated
-# repo, skip blueprint auto-detection and create the service by hand with
-# Root Directory = services/godley-os-bot (see README "Deploy to Render").
+# Render configuration of record for godley-os-bot: one always-on Node web
+# service. The deploy path is the godleyinnovations monorepo with Root
+# Directory = services/godley-os-bot, entered by hand in the dashboard (see
+# README "Deploy to Render") — Render's blueprint auto-detection only reads
+# a repo-root render.yaml, so this file is documentation there, and becomes
+# auto-detectable if the service ever moves to its own repo.
 #
 # PORT is not listed below on purpose: Render injects it automatically and
 # src/index.ts binds to it.

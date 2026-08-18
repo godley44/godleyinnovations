@@ -72,25 +72,28 @@ is used as-is.
 
 ## Deploy to Render
 
-1. Push this service to a GitHub repo Render can see (its own repo is
-   simplest — `render.yaml` must sit at the repo root for auto-detection;
-   see "Standalone repo" below).
-2. In the Render dashboard: **New → Blueprint**, connect the GitHub repo.
-   Render auto-detects `render.yaml` and proposes the `godley-os-bot` web
-   service (Node, plan `starter`, build `npm install && npm run build`,
-   start `npm start`, health check `/health`).
-3. Add the environment variables in the Render dashboard when prompted
-   (every var in `render.yaml` is `sync: false`, so Render asks for each):
+The service deploys from this monorepo, not a separate repo:
+
+1. In the Render dashboard: **New → Web Service**, connect the
+   `godley44/godleyinnovations` GitHub repo.
+2. Set **Root Directory** to `services/godley-os-bot`. Render runs every
+   command from that directory and auto-deploys only when files under it
+   change — pushes that touch just the frontend don't redeploy the bot.
+3. Settings: runtime **Node**, build command `npm install && npm run build`,
+   start command `npm start`, health check path `/health`, plan **Starter**
+   (always-on; the free tier sleeps and would miss Slack's 3-second window).
+4. Add the environment variables in the Render dashboard (Environment tab):
    `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `SUPABASE_URL`,
    `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
    `BLOTATO_API_KEY`. (`PORT` is injected by Render automatically.)
-4. Deploy. When the health check at `/health` is green, point the Slack app
+5. Deploy. When the health check at `/health` is green, point the Slack app
    at it (below).
 
-Deploying from the monorepo instead: **New → Web Service**, connect
-`godleyinnovations`, set **Root Directory** to `services/godley-os-bot`, and
-enter the same build/start/health-check settings by hand (blueprint
-auto-detection only looks at the repo root).
+`render.yaml` in this directory documents the same configuration. Render's
+blueprint auto-detection only reads a repo-root `render.yaml`, so with the
+monorepo the dashboard settings above are what counts — the file is the
+config of record and becomes auto-detectable if the service ever moves to
+its own repo.
 
 ### Slack app configuration
 
@@ -102,15 +105,3 @@ auto-detection only looks at the repo root).
    `https://<service>.onrender.com/slack/interactions`.
 3. Install the app to the workspace; put the signing secret and bot token in
    Render's environment.
-
-### Standalone repo
-
-To give the service its own GitHub repo (so `render.yaml` is at the root):
-
-```bash
-cd godleyinnovations
-git subtree split --prefix=services/godley-os-bot -b godley-os-bot-export
-# create an empty repo named godley-os-bot on GitHub first, then:
-git push git@github.com:godley44/godley-os-bot.git godley-os-bot-export:main
-git branch -D godley-os-bot-export
-```
