@@ -10,7 +10,7 @@ The research/framing/publishing pipelines are stubs on purpose.
 | Route | What it does |
 | --- | --- |
 | `GET /health` | Returns `200 ok` — Render health check. |
-| `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge and acks everything within Slack's 3-second window. An `@mention` of the bot is the **health probe**: it replies in-thread (after the ack, fire-and-forget) with the bot version, poller status, timestamp of the last successful delivery check, and how many approved reports are awaiting delivery. |
+| `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge and acks everything within Slack's 3-second window. An `@mention` of the bot is the **health probe**: it replies in-thread (after the ack, fire-and-forget) with the bot version, poller status, timestamps of the last successful delivery check and last delivered report, and how many reports need attention (failed or stuck deliveries). |
 | `POST /slack/interactions` | Slack interactivity. Approve/Reject buttons write the decision to Supabase, then replace the original message ("✅ Approved by Justin" / "❌ Rejected by Justin"). A failed write is reported in-channel and nothing is retried silently. |
 | `POST /admin/deliver-now` | Runs one report-delivery poll cycle immediately (with full Slack channel resolution) and returns the result as JSON — for testing delivery without waiting on the Monday cron. Auth: `Authorization: Bearer <ADMIN_SECRET>`; with the secret unset the route refuses everything. |
 
@@ -64,14 +64,20 @@ The pipeline (`src/lib/report-poller.ts`, every 60s):
    `src/lib/brief-blocks.test.ts` (`npm test`) against fixtures shaped like
    the real weekly-insight output.
 
-**Current mode: discovery only — nothing is posted yet.** Not double-posting
-after a restart requires delivery state in the *database*, and no existing
-table or column can hold it (schema is never invented here). A
-`slack_deliveries` migration is proposed and awaiting the owner's approval;
-until it lands the poller logs what it *would* deliver, `/admin/deliver-now`
-reports candidates with their channel resolution, and the mention probe
-answers "discovery mode". The posting step has exactly one plug-in point,
-marked in `report-poller.ts`.
+4. Delivery is tracked in the **`slack_deliveries` ledger** (migration 004)
+   with a claim-before-post protocol, so a report can never be posted twice
+   across restarts: the bot inserts a `posting` row (atomic — the table is
+   `unique(proposal_id)`) *before* calling Slack, then records `delivered` +
+   the message `ts`. Failures (`failed` + reason) are terminal — no silent
+   retries: fix the cause (create/invite into the channel, etc.), delete the
+   row, and the next cycle re-arms. A row stuck at `posting` means the bot
+   died mid-post — the probe and `/admin/deliver-now` surface it; check the
+   channel before deleting that row, because deleting a row for a message
+   that *did* land re-posts it.
+
+**Deploy order is safe in both directions:** if the bot deploys before
+migration 004 has been run, every cycle fails loudly with "run
+supabase/migrations/004_slack_deliveries.sql" and nothing is posted.
 
 Slack API calls are plain `fetch` (`src/lib/slack-web.ts`) — no Slack SDK,
 same policy as signature verification.

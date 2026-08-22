@@ -1,6 +1,6 @@
 // POST /admin/deliver-now — manual poll trigger so delivery can be tested
-// end-to-end without waiting for Monday's cron. Runs ONE poll cycle with
-// full Slack channel resolution and returns the candidate report as JSON.
+// end-to-end without waiting for Monday's cron. Runs ONE real delivery
+// cycle and returns the per-report outcome as JSON.
 //
 // Auth: Authorization: Bearer <ADMIN_SECRET>. Fail closed — with the secret
 // unset every request is refused, so a fresh deploy can never expose the
@@ -32,13 +32,12 @@ adminRoutes.post("/deliver-now", async (c) => {
     return c.json({ ok: false, error: "bad or missing admin secret" }, 401);
   }
 
-  const result = await runPollCycle({ resolveChannels: true });
+  const result = await runPollCycle();
   if (result.skipped) {
     return c.json({ ok: false, error: "a poll cycle is already running — retry in a few seconds" }, 409);
   }
   return c.json({
     ok: result.state.lastCheckOk === true,
-    deliveryEnabled: result.state.deliveryEnabled,
     checkedAt: result.state.lastCheckAt,
     error: result.state.lastCheckError,
     candidates: result.state.lastCandidates,

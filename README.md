@@ -93,5 +93,8 @@ guard script so it can't happen twice.
   wasn't handed), adds calendar/sentiment via web search, and files the
   brief through `os-ingest` as a pending proposal. Scheduled by migration
   003 (pg_cron, Mondays 13:00 UTC); secrets come from Vault at each firing.
+  Once the owner approves it, `services/godley-os-bot` posts the brief to
+  the venture's Slack channel, tracked in `slack_deliveries` (migration 004)
+  so it can never double-post.
 - `docs/lil-bull-interactive-spec.md` — staged spec for the Slack-phase
   interactive features (not built yet).

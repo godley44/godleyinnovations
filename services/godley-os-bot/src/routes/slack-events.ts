@@ -53,18 +53,18 @@ function alreadySeen(eventId: string | undefined): boolean {
 // phone without opening Render logs.
 function healthStatusText(): string {
   const state = getPollerState();
-  const poller = state.intervalRunning
-    ? state.deliveryEnabled
-      ? "running"
-      : "running (discovery mode — Slack delivery is off until the delivery-tracking migration is approved)"
-    : "NOT RUNNING";
+  const poller = state.intervalRunning ? "running" : "NOT RUNNING";
   const lastOk = state.lastSuccessAt ? formatUtc(new Date(state.lastSuccessAt)) : "never";
+  const lastDelivered = state.lastDeliveredAt ? formatUtc(new Date(state.lastDeliveredAt)) : "none yet";
   const failure =
     state.lastCheckOk === false ? ` Last check FAILED: ${state.lastCheckError ?? "unknown error"}.` : "";
-  const ready = state.lastCandidates.length;
+  const attention = state.lastCandidates.filter(
+    (c) => c.status === "failed" || c.status === "previously-failed" || c.status === "posting-stuck",
+  ).length;
   return (
     `godley-os-bot v${BOT_VERSION} · poller: ${poller} · ` +
-    `last successful delivery check: ${lastOk} · approved reports awaiting delivery: ${ready}.${failure}`
+    `last successful delivery check: ${lastOk} · last delivered: ${lastDelivered} · ` +
+    `reports needing attention: ${attention}.${failure}`
   );
 }
 
