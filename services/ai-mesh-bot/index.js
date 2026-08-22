@@ -22,6 +22,22 @@ const PERSONAS = {
 };
 const DEFAULT_PERSONA = "claude";
 
+// Channel → venture routing. CHANNEL_VENTURES maps Slack channel IDs to
+// venture slugs, e.g. CHANNEL_VENTURES="C0123ABCDEF=lil-bull,C0456GHI=acme".
+// The channel an instruction came from decides which venture an OS write
+// lands on — never the model: a bridge may propose a venture_slug but it is
+// always overwritten with the channel's mapping, and an unmapped channel
+// refuses the write outright instead of guessing.
+function parseChannelVentures(raw) {
+  const map = new Map();
+  for (const pair of (raw ?? "").split(",")) {
+    const [channelId, slug] = pair.split("=").map((s) => s?.trim());
+    if (channelId && slug) map.set(channelId, slug);
+  }
+  return map;
+}
+const channelVentures = parseChannelVentures(process.env.CHANNEL_VENTURES);
+
 // Slack retries events it thinks failed; without dedupe a slow bridge means
 // the same instruction runs twice. In-memory is acceptable: a restart losing
 // the set can at worst double-handle one in-flight event, never loop.
@@ -119,12 +135,19 @@ async function fetchThreadContext(channel, threadTs, triggerTs) {
 async function callBridge(persona, body) {
   const url = process.env[PERSONAS[persona].webhookEnv];
   if (!url) return { reply: null, osUpdate: null, unconfigured: true };
+  // Bridges are publicly reachable URLs; the shared secret keeps strangers
+  // from invoking them (and burning model spend) even though they hold no
+  // data of their own.
+  const headers = { "content-type": "application/json" };
+  if (process.env.BRIDGE_SHARED_SECRET) {
+    headers.authorization = `Bearer ${process.env.BRIDGE_SHARED_SECRET}`;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25_000);
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -211,8 +234,22 @@ async function handleTurn(event) {
   // bridge to behave: bridges are the least-trusted part of this system.
   if (bridge.osUpdate) {
     if (persona === "claude" && PERSONAS[persona].canWriteOS) {
+      // GUARD:channel-venture-map — the venture an OS write lands on comes
+      // from the channel mapping, never from the bridge. Whatever the model
+      // proposed is overwritten below; an unmapped channel gets a plain
+      // refusal instead of a guess. Guessing here would let a misrouted
+      // Slack message write into the wrong venture's books.
+      const ventureSlug = channelVentures.get(channel);
+      if (!ventureSlug) {
+        await postToThread(
+          channel,
+          threadTs,
+          "This channel isn't mapped to a venture, so I can't file OS updates from here. Add this channel's ID to CHANNEL_VENTURES to enable writes.",
+        );
+        return;
+      }
       try {
-        const result = await writeToOS(bridge.osUpdate);
+        const result = await writeToOS({ ...bridge.osUpdate, venture_slug: ventureSlug });
         // OS writes land as pending proposals (migration 002); say so in the
         // thread so the human knows there's a decision waiting on their phone.
         await postToThread(channel, threadTs, `📥 ${result.note ?? "Proposal filed — approve it in the OS app."}`);

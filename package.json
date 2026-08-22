@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit && node scripts/check-config.mjs && node scripts/check-migrations.mjs && node scripts/check-mesh-bot.mjs"
+    "check": "tsc --noEmit && node scripts/check-config.mjs && node scripts/check-migrations.mjs && node scripts/check-mesh-bot.mjs && node scripts/check-indicators.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.48.0",

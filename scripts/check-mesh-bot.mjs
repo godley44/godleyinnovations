@@ -46,6 +46,22 @@ if ((src.match(/writeToOS\(/g) ?? []).length > 2) {
   failures.push("writeToOS() has more than one call site — the claude-only gate guards a single call site by design");
 }
 
+// Invariant 3: the venture an OS write lands on comes from the channel
+// mapping, never from the bridge. The spread-then-override shape matters:
+// venture_slug must come AFTER ...bridge.osUpdate so the channel's value
+// always wins over anything the model proposed.
+if (!src.includes("GUARD:channel-venture-map") || !/channelVentures\.get\(/.test(src)) {
+  failures.push("channel→venture guard (GUARD:channel-venture-map + channelVentures lookup) is missing");
+}
+if (!/writeToOS\(\{\s*\.\.\.bridge\.osUpdate,\s*venture_slug:\s*ventureSlug\s*\}\)/.test(src)) {
+  failures.push(
+    "the writeToOS call must be writeToOS({ ...bridge.osUpdate, venture_slug: ventureSlug }) — channel mapping overrides the bridge",
+  );
+}
+if (!/isn't mapped to a venture/.test(src)) {
+  failures.push("the unmapped-channel refusal reply is missing — unmapped channels must refuse, never guess");
+}
+
 if (failures.length > 0) {
   console.error("check-mesh-bot FAILED:\n" + failures.map((f) => `  - ${f}`).join("\n"));
   process.exit(1);

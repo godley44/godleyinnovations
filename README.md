@@ -81,4 +81,17 @@ guard script so it can't happen twice.
   `os-ingest` function below.
 - `supabase/functions/os-ingest/` — server-side write path into the OS for
   trusted automation, gated by a secret that lives only in Supabase function
-  secrets. The service-role key is used here and nowhere else.
+  secrets. The service-role key is used here and nowhere else. Deployed at
+  `https://jvsrlcfkotvmvyxiniid.supabase.co/functions/v1/os-ingest`.
+- `supabase/functions/claude-bridge/` — the mesh bot's claude persona: takes
+  a Slack instruction, calls the Claude API, returns `{ reply, osUpdate }`.
+  Proposes only — the router decides what gets filed and for which venture.
+- `supabase/functions/weekly-insight/` — the Lil Bull Weekly Market Brief:
+  fetches real index candles (S&P 500, NASDAQ, Dow), computes MACD /
+  StochRSI / MA-cross per timeframe in code (`indicators.ts`, guarded by
+  `scripts/check-indicators.mjs` — the model never states a number it
+  wasn't handed), adds calendar/sentiment via web search, and files the
+  brief through `os-ingest` as a pending proposal. Scheduled by migration
+  003 (pg_cron, Mondays 13:00 UTC); secrets come from Vault at each firing.
+- `docs/lil-bull-interactive-spec.md` — staged spec for the Slack-phase
+  interactive features (not built yet).
