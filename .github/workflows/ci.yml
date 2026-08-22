@@ -44,6 +44,9 @@ jobs:
           cache-dependency-path: services/godley-os-bot/package-lock.json
       - run: npm ci
       - run: npm run build
+      # Unit tests compile with the build (src/**/*.test.ts → dist/); the
+      # glob keeps the runner off dist/index.js, which starts the server.
+      - run: node --test "dist/**/*.test.js"
 
   # The migrations are applied by hand in production, so CI is the only place
   # the SQL executes before the real database. Applies every migration in
