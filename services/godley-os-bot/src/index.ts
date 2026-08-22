@@ -1,13 +1,19 @@
 // godley-os-bot: Slack bot backend for the Godley Innovations OS.
-// Hono app — three routes, nothing else:
+// Hono app — four routes:
 //   GET  /health              → 200 "ok" (Render health check)
-//   POST /slack/events        → Events API (signature-verified)
+//   POST /slack/events        → Events API (signature-verified); @mentions
+//                               answer with the health probe
 //   POST /slack/interactions  → interactivity: Approve/Reject buttons
 //                               (signature-verified)
+//   POST /admin/deliver-now   → run one report-delivery poll cycle now
+//                               (ADMIN_SECRET bearer auth)
+// Plus the report poller (src/lib/report-poller.ts) on a 60s interval.
 
 import { existsSync } from "node:fs";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import { startReportPoller } from "./lib/report-poller.js";
+import { adminRoutes } from "./routes/admin.js";
 import { slackEvents } from "./routes/slack-events.js";
 import { slackInteractions } from "./routes/slack-interactions.js";
 
@@ -22,9 +28,11 @@ const app = new Hono();
 app.get("/health", (c) => c.text("ok", 200));
 app.route("/slack/events", slackEvents);
 app.route("/slack/interactions", slackInteractions);
+app.route("/admin", adminRoutes);
 
 const port = Number(process.env.PORT ?? 3000);
 
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`godley-os-bot listening on :${info.port}`);
+  startReportPoller();
 });

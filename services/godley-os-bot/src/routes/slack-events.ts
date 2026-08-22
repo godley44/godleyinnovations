@@ -6,7 +6,11 @@
 // pipeline is built it plugs in there, never before the ack.
 
 import { Hono } from "hono";
+import { getPollerState } from "../lib/report-poller.js";
+import { formatUtc } from "../lib/brief-blocks.js";
+import { postMessage } from "../lib/slack-web.js";
 import { slackVerify, type SlackVerifiedEnv } from "../lib/slack-verify.js";
+import { BOT_VERSION } from "../lib/version.js";
 
 interface SlackEvent {
   type: string;
@@ -15,6 +19,7 @@ interface SlackEvent {
   user?: string;
   text?: string;
   ts?: string;
+  thread_ts?: string;
   bot_id?: string;
   subtype?: string;
 }
@@ -43,6 +48,26 @@ function alreadySeen(eventId: string | undefined): boolean {
   return false;
 }
 
+// An @mention is the health probe: answer in-thread with version, poller
+// status, and the last delivery check, so the bot can be checked from a
+// phone without opening Render logs.
+function healthStatusText(): string {
+  const state = getPollerState();
+  const poller = state.intervalRunning ? "running" : "NOT RUNNING";
+  const lastOk = state.lastSuccessAt ? formatUtc(new Date(state.lastSuccessAt)) : "never";
+  const lastDelivered = state.lastDeliveredAt ? formatUtc(new Date(state.lastDeliveredAt)) : "none yet";
+  const failure =
+    state.lastCheckOk === false ? ` Last check FAILED: ${state.lastCheckError ?? "unknown error"}.` : "";
+  const attention = state.lastCandidates.filter(
+    (c) => c.status === "failed" || c.status === "previously-failed" || c.status === "posting-stuck",
+  ).length;
+  return (
+    `godley-os-bot v${BOT_VERSION} · poller: ${poller} · ` +
+    `last successful delivery check: ${lastOk} · last delivered: ${lastDelivered} · ` +
+    `reports needing attention: ${attention}.${failure}`
+  );
+}
+
 // Pipeline hook. Everything here happens after Slack already got its 200, so
 // it may become as slow as it likes (Anthropic/OpenAI calls, Supabase writes).
 async function processEvent(event: SlackEvent): Promise<void> {
@@ -51,6 +76,15 @@ async function processEvent(event: SlackEvent): Promise<void> {
       `channel=${event.channel ?? "?"} user=${event.user ?? "?"} ` +
       `text=${JSON.stringify(event.text ?? "")}`,
   );
+  if (event.type === "app_mention" && event.channel && event.ts) {
+    await postMessage({
+      channel: event.channel,
+      // Replying in the mention's thread (or starting one on it) keeps the
+      // probe out of the channel's main scroll.
+      threadTs: event.thread_ts ?? event.ts,
+      text: healthStatusText(),
+    });
+  }
 }
 
 export const slackEvents = new Hono<SlackVerifiedEnv>();

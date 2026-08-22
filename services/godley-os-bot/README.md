@@ -10,8 +10,9 @@ The research/framing/publishing pipelines are stubs on purpose.
 | Route | What it does |
 | --- | --- |
 | `GET /health` | Returns `200 ok` — Render health check. |
-| `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge; for `app_mention` and `message.channels` events from humans it logs and acks within Slack's 3-second window (processing is a fire-and-forget hook for later). |
+| `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge and acks everything within Slack's 3-second window. An `@mention` of the bot is the **health probe**: it replies in-thread (after the ack, fire-and-forget) with the bot version, poller status, timestamps of the last successful delivery check and last delivered report, and how many reports need attention (failed or stuck deliveries). |
 | `POST /slack/interactions` | Slack interactivity. Approve/Reject buttons write the decision to Supabase, then replace the original message ("✅ Approved by Justin" / "❌ Rejected by Justin"). A failed write is reported in-channel and nothing is retried silently. |
+| `POST /admin/deliver-now` | Runs one report-delivery poll cycle immediately (with full Slack channel resolution) and returns the result as JSON — for testing delivery without waiting on the Monday cron. Auth: `Authorization: Bearer <ADMIN_SECRET>`; with the secret unset the route refuses everything. |
 
 Both Slack routes verify the request signature by hand (no Slack SDK): HMAC
 SHA-256 over `v0:<timestamp>:<raw body>` with the signing secret, timing-safe
@@ -39,6 +40,48 @@ Channel → venture routing lives in `src/lib/venture-map.ts`: channel name
 equals `ventures.slug` (`#lil-bull` → slug `lil-bull`); `resolveVenture`
 throws a clear error when no venture matches.
 
+## Report delivery (Lil Bull Weekly Market Brief)
+
+The bot's first job: post OS reports into the matching venture channel.
+The pipeline (`src/lib/report-poller.ts`, every 60s):
+
+1. **Ready** means approved: `proposals` rows with `action='note.append'`,
+   `proposed_by='weekly-insight'`, `status='approved'`. The weekly-insight
+   cron (migration 003, Mondays 13:00 UTC) files the brief as a *pending*
+   proposal; a brief reaches Slack only after the owner approved it — the
+   human-sign-off gate applies to outbound posts exactly as it does to
+   database writes.
+2. The venture's channel is the one whose **name equals `ventures.slug`**
+   (the `venture-map.ts` convention, applied in the venture→channel
+   direction via `conversations.list`, cached 15 min). A missing channel or
+   a channel the bot isn't a member of is a loud failure with the reason —
+   never a guess at an alternate channel.
+3. The brief text (the exact `payload.text` the owner approved) renders to
+   Block Kit in `src/lib/brief-blocks.ts`: header + venture, stances,
+   timeframe table as a code block, calendar bullets, sentiment, lean,
+   legend/disclaimer as small context text, and a
+   "Generated <UTC time> · Godley Innovations OS" footer. Unit-tested in
+   `src/lib/brief-blocks.test.ts` (`npm test`) against fixtures shaped like
+   the real weekly-insight output.
+
+4. Delivery is tracked in the **`slack_deliveries` ledger** (migration 004)
+   with a claim-before-post protocol, so a report can never be posted twice
+   across restarts: the bot inserts a `posting` row (atomic — the table is
+   `unique(proposal_id)`) *before* calling Slack, then records `delivered` +
+   the message `ts`. Failures (`failed` + reason) are terminal — no silent
+   retries: fix the cause (create/invite into the channel, etc.), delete the
+   row, and the next cycle re-arms. A row stuck at `posting` means the bot
+   died mid-post — the probe and `/admin/deliver-now` surface it; check the
+   channel before deleting that row, because deleting a row for a message
+   that *did* land re-posts it.
+
+**Deploy order is safe in both directions:** if the bot deploys before
+migration 004 has been run, every cycle fails loudly with "run
+supabase/migrations/004_slack_deliveries.sql" and nothing is posted.
+
+Slack API calls are plain `fetch` (`src/lib/slack-web.ts`) — no Slack SDK,
+same policy as signature verification.
+
 ## The 3-second rule
 
 Slack retries anything not acked within 3 seconds, so every route returns
@@ -53,8 +96,8 @@ All documented with placeholders in [`.env.example`](.env.example) — copy to
 `.env` locally, set real values only in the Render dashboard:
 
 `PORT` (Render injects it), `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`,
-`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `BLOTATO_API_KEY`.
+`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_SECRET`,
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `BLOTATO_API_KEY`.
 
 ## Local development
 

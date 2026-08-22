@@ -1,6 +1,6 @@
 {
   "name": "godley-os-bot",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Slack bot backend for the Godley Innovations OS: events in, signatures verified, approvals written to Supabase.",
@@ -11,7 +11,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
