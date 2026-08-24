@@ -14,10 +14,19 @@
 // mrkdwn per section (long sections split on line boundaries), 50 blocks per
 // message.
 
+export interface SlackButton {
+  type: "button";
+  text: { type: "plain_text"; text: string };
+  action_id: string;
+  value: string;
+  style?: "primary" | "danger";
+}
+
 export type SlackBlock =
   | { type: "header"; text: { type: "plain_text"; text: string } }
   | { type: "section"; text: { type: "mrkdwn"; text: string } }
   | { type: "context"; elements: { type: "mrkdwn"; text: string }[] }
+  | { type: "actions"; elements: SlackButton[] }
   | { type: "divider" };
 
 export interface BriefMessageInput {
@@ -37,7 +46,7 @@ const BLOCKS_MAX = 50;
 
 // Slack mrkdwn requires exactly these three entities escaped, everywhere —
 // code blocks included.
-function esc(text: string): string {
+export function esc(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
@@ -45,11 +54,11 @@ export function formatUtc(date: Date): string {
   return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
-function section(text: string): SlackBlock {
+export function section(text: string): SlackBlock {
   return { type: "section", text: { type: "mrkdwn", text } };
 }
 
-function context(text: string): SlackBlock {
+export function context(text: string): SlackBlock {
   return { type: "context", elements: [{ type: "mrkdwn", text }] };
 }
 

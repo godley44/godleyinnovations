@@ -97,3 +97,20 @@ export async function postMessage(args: PostMessageArgs): Promise<string> {
   });
   return typeof res.ts === "string" ? res.ts : "";
 }
+
+// Rewrite an existing bot message in place (chat.update) — used to disarm an
+// approval prompt whose proposal was decided outside Slack. Passing blocks
+// REPLACES the old blocks entirely, which is the point: the buttons go away.
+export async function updateMessage(args: {
+  channel: string;
+  ts: string;
+  text: string;
+  blocks?: unknown[];
+}): Promise<void> {
+  await slackApi("chat.update", {
+    channel: args.channel,
+    ts: args.ts,
+    text: args.text,
+    blocks: args.blocks,
+  });
+}

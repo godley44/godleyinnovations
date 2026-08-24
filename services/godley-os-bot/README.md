@@ -82,6 +82,27 @@ supabase/migrations/004_slack_deliveries.sql" and nothing is posted.
 Slack API calls are plain `fetch` (`src/lib/slack-web.ts`) — no Slack SDK,
 same policy as signature verification.
 
+## Slack approval loop (pending proposals → buttons)
+
+The sibling flow to report delivery: PENDING proposals are posted to the
+venture's channel with Approve/Reject buttons, wired to the interactions
+contract above (`action_id` `approve`/`reject`, proposal id in the button
+`value` — defined in `slack-interactions.ts`, rendered by
+`src/lib/approval-blocks.ts`, never redefined). After a tap the message is
+replaced in place with WHAT was decided — outcome, venture, proposal type,
+source, UTC time (`buildDecidedMessage`) — not a bare "Approved". The same
+renderer disarms a prompt via `chat.update` when the proposal was decided
+outside Slack (the Vercel inbox), so buttons never stay live for a decided
+proposal.
+
+**Current status: the renderers, the decision replacement, and
+`chat.update` support ship now; the posting/disarm poller steps are
+awaiting the owner's approval of a `slack_prompts` tracking migration.**
+`slack_deliveries` cannot track prompt messages — its `unique(proposal_id)`
+would collide with a weekly-insight proposal having both a prompt row and a
+brief-delivery row, and its statuses have no live/disarmed lifecycle —
+and schema is never invented here.
+
 ## The 3-second rule
 
 Slack retries anything not acked within 3 seconds, so every route returns
