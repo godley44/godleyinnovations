@@ -56,15 +56,21 @@ function healthStatusText(): string {
   const poller = state.intervalRunning ? "running" : "NOT RUNNING";
   const lastOk = state.lastSuccessAt ? formatUtc(new Date(state.lastSuccessAt)) : "never";
   const lastDelivered = state.lastDeliveredAt ? formatUtc(new Date(state.lastDeliveredAt)) : "none yet";
+  const lastPrompt = state.lastPromptPostedAt ? formatUtc(new Date(state.lastPromptPostedAt)) : "none yet";
   const failure =
     state.lastCheckOk === false ? ` Last check FAILED: ${state.lastCheckError ?? "unknown error"}.` : "";
-  const attention = state.lastCandidates.filter(
-    (c) => c.status === "failed" || c.status === "previously-failed" || c.status === "posting-stuck",
+  const needsAttention = (s: string) =>
+    s === "failed" || s === "previously-failed" || s === "posting-stuck" || s === "already-disarmed";
+  const attention =
+    state.lastDeliveries.filter((c) => needsAttention(c.status)).length +
+    state.lastPrompts.filter((c) => needsAttention(c.status)).length;
+  const awaiting = state.lastPrompts.filter(
+    (c) => c.status === "posted" || c.status === "already-posted",
   ).length;
   return (
-    `godley-os-bot v${BOT_VERSION} · poller: ${poller} · ` +
-    `last successful delivery check: ${lastOk} · last delivered: ${lastDelivered} · ` +
-    `reports needing attention: ${attention}.${failure}`
+    `godley-os-bot v${BOT_VERSION} · poller: ${poller} · last successful check: ${lastOk} · ` +
+    `approvals awaiting decision in Slack: ${awaiting} · last buttons post: ${lastPrompt} · ` +
+    `last report delivered: ${lastDelivered} · needs attention: ${attention}.${failure}`
   );
 }
 

@@ -25,6 +25,7 @@
 // is never swallowed: it is reported in-channel and nothing else happens.
 
 import { Hono } from "hono";
+import { buildDecidedMessage } from "../lib/approval-blocks.js";
 import { slackVerify, type SlackVerifiedEnv } from "../lib/slack-verify.js";
 import { getSupabase } from "../lib/supabase.js";
 
@@ -73,6 +74,65 @@ async function recordDecision(decision: Decision, proposalId: string): Promise<v
   }
 }
 
+// The replacement message must still say WHAT was decided (venture, proposal
+// type, time), not just "Approved" — the prompt's own content is gone once
+// replace_original fires. The context comes from the proposal row after the
+// decision; if that lookup fails, fall back to the bare confirmation rather
+// than blocking the decision from being acknowledged.
+async function decidedReplacement(decision: Decision, proposalId: string): Promise<object> {
+  const fallbackText =
+    decision === "approve" ? `✅ Approved by ${DECIDER_NAME}` : `❌ Rejected by ${DECIDER_NAME}`;
+  try {
+    const { data, error } = await getSupabase()
+      .from("proposals")
+      .select("action, proposed_by, decided_at, venture:ventures(name)")
+      .eq("id", proposalId)
+      .maybeSingle();
+    if (error || !data) throw new Error(error?.message ?? "proposal not found after decision");
+    const row = data as { action?: unknown; proposed_by?: unknown; decided_at?: unknown; venture?: unknown };
+    const ventureRaw = Array.isArray(row.venture) ? row.venture[0] : row.venture;
+    const ventureName = (ventureRaw as { name?: unknown } | null)?.name;
+    if (typeof row.action !== "string" || typeof ventureName !== "string") {
+      throw new Error("proposal row missing action/venture");
+    }
+    const message = buildDecidedMessage({
+      decision,
+      ventureName,
+      action: row.action,
+      proposedBy: typeof row.proposed_by === "string" ? row.proposed_by : "automation",
+      decidedAt: typeof row.decided_at === "string" ? new Date(row.decided_at) : new Date(),
+      via: `by ${DECIDER_NAME}`,
+    });
+    return { replace_original: true, text: message.text, blocks: message.blocks };
+  } catch (err) {
+    console.error(
+      `[interactions] decided, but could not load context for ${proposalId}: ` +
+        `${err instanceof Error ? err.message : String(err)} — falling back to plain confirmation`,
+    );
+    return { replace_original: true, text: fallbackText };
+  }
+}
+
+// After a decision through THESE buttons, mark the prompt's ledger row
+// disarmed so the poller's disarm pass doesn't re-render the message (it
+// would drop the "by Justin" attribution). 'posting' is included: a tap
+// proves the message exists, healing a row stuck by a crash-before-record.
+// Failure here is only logged — the poller repairs un-marked prompts on its
+// next cycle, so the acknowledgement must not be blocked by it.
+async function disarmOwnPrompt(proposalId: string): Promise<void> {
+  const { error } = await getSupabase()
+    .from("slack_prompts")
+    .update({ status: "disarmed", disarmed_at: new Date().toISOString() })
+    .eq("proposal_id", proposalId)
+    .in("status", ["posted", "posting"]);
+  if (error) {
+    console.error(
+      `[interactions] could not mark prompt ${proposalId} disarmed (${error.message}) — ` +
+        "the poller's disarm pass will repair it",
+    );
+  }
+}
+
 async function handleDecision(
   decision: Decision,
   proposalId: string,
@@ -92,10 +152,8 @@ async function handleDecision(
     });
     return;
   }
-  await respond(responseUrl, {
-    replace_original: true,
-    text: decision === "approve" ? `✅ Approved by ${DECIDER_NAME}` : `❌ Rejected by ${DECIDER_NAME}`,
-  });
+  await respond(responseUrl, await decidedReplacement(decision, proposalId));
+  await disarmOwnPrompt(proposalId);
 }
 
 export const slackInteractions = new Hono<SlackVerifiedEnv>();

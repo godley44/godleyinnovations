@@ -95,6 +95,8 @@ guard script so it can't happen twice.
   003 (pg_cron, Mondays 13:00 UTC); secrets come from Vault at each firing.
   Once the owner approves it, `services/godley-os-bot` posts the brief to
   the venture's Slack channel, tracked in `slack_deliveries` (migration 004)
-  so it can never double-post.
+  so it can never double-post. Pending proposals themselves reach Slack as
+  Approve/Reject button messages (tracked in `slack_prompts`, migration
+  005), so approval works from the channel as well as the app.
 - `docs/lil-bull-interactive-spec.md` — staged spec for the Slack-phase
   interactive features (not built yet).

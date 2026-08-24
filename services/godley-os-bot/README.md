@@ -82,6 +82,33 @@ supabase/migrations/004_slack_deliveries.sql" and nothing is posted.
 Slack API calls are plain `fetch` (`src/lib/slack-web.ts`) — no Slack SDK,
 same policy as signature verification.
 
+## Slack approval loop (pending proposals → buttons)
+
+The sibling flow to report delivery: PENDING proposals are posted to the
+venture's channel with Approve/Reject buttons, wired to the interactions
+contract above (`action_id` `approve`/`reject`, proposal id in the button
+`value` — defined in `slack-interactions.ts`, rendered by
+`src/lib/approval-blocks.ts`, never redefined). After a tap the message is
+replaced in place with WHAT was decided — outcome, venture, proposal type,
+source, UTC time (`buildDecidedMessage`) — not a bare "Approved". The same
+renderer disarms a prompt via `chat.update` when the proposal was decided
+outside Slack (the Vercel inbox), so buttons never stay live for a decided
+proposal.
+
+Prompts are tracked in **`slack_prompts`** (migration 005) — deliberately a
+separate table from `slack_deliveries`, because a weekly-insight proposal
+legitimately has BOTH a buttons prompt (pending) and a brief delivery
+(after approval), and the two message kinds have different lifecycles. Same
+claim-before-post protocol (`posting` → `posted` → `disarmed`/`failed`,
+`unique(proposal_id)`), same terminal-failure semantics
+(delete-the-row-to-re-arm), same restart safety. The poller's disarm pass
+runs every cycle: any `posted` prompt whose proposal is no longer pending
+gets `chat.update`d to the decided layout (a hand-deleted message is just
+marked disarmed); a decision through the buttons marks its own row
+disarmed so the pass doesn't overwrite the "by Justin" attribution. If the
+bot deploys before migration 005 has been run, report delivery keeps
+working and the prompt steps fail loudly with "run migration 005".
+
 ## The 3-second rule
 
 Slack retries anything not acked within 3 seconds, so every route returns
