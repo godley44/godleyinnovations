@@ -40,6 +40,7 @@ adminRoutes.post("/deliver-now", async (c) => {
     ok: result.state.lastCheckOk === true,
     checkedAt: result.state.lastCheckAt,
     error: result.state.lastCheckError,
-    candidates: result.state.lastCandidates,
+    deliveries: result.state.lastDeliveries,
+    prompts: result.state.lastPrompts,
   });
 });

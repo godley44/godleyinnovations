@@ -95,13 +95,19 @@ renderer disarms a prompt via `chat.update` when the proposal was decided
 outside Slack (the Vercel inbox), so buttons never stay live for a decided
 proposal.
 
-**Current status: the renderers, the decision replacement, and
-`chat.update` support ship now; the posting/disarm poller steps are
-awaiting the owner's approval of a `slack_prompts` tracking migration.**
-`slack_deliveries` cannot track prompt messages — its `unique(proposal_id)`
-would collide with a weekly-insight proposal having both a prompt row and a
-brief-delivery row, and its statuses have no live/disarmed lifecycle —
-and schema is never invented here.
+Prompts are tracked in **`slack_prompts`** (migration 005) — deliberately a
+separate table from `slack_deliveries`, because a weekly-insight proposal
+legitimately has BOTH a buttons prompt (pending) and a brief delivery
+(after approval), and the two message kinds have different lifecycles. Same
+claim-before-post protocol (`posting` → `posted` → `disarmed`/`failed`,
+`unique(proposal_id)`), same terminal-failure semantics
+(delete-the-row-to-re-arm), same restart safety. The poller's disarm pass
+runs every cycle: any `posted` prompt whose proposal is no longer pending
+gets `chat.update`d to the decided layout (a hand-deleted message is just
+marked disarmed); a decision through the buttons marks its own row
+disarmed so the pass doesn't overwrite the "by Justin" attribution. If the
+bot deploys before migration 005 has been run, report delivery keeps
+working and the prompt steps fail loudly with "run migration 005".
 
 ## The 3-second rule
 

@@ -113,6 +113,26 @@ async function decidedReplacement(decision: Decision, proposalId: string): Promi
   }
 }
 
+// After a decision through THESE buttons, mark the prompt's ledger row
+// disarmed so the poller's disarm pass doesn't re-render the message (it
+// would drop the "by Justin" attribution). 'posting' is included: a tap
+// proves the message exists, healing a row stuck by a crash-before-record.
+// Failure here is only logged — the poller repairs un-marked prompts on its
+// next cycle, so the acknowledgement must not be blocked by it.
+async function disarmOwnPrompt(proposalId: string): Promise<void> {
+  const { error } = await getSupabase()
+    .from("slack_prompts")
+    .update({ status: "disarmed", disarmed_at: new Date().toISOString() })
+    .eq("proposal_id", proposalId)
+    .in("status", ["posted", "posting"]);
+  if (error) {
+    console.error(
+      `[interactions] could not mark prompt ${proposalId} disarmed (${error.message}) — ` +
+        "the poller's disarm pass will repair it",
+    );
+  }
+}
+
 async function handleDecision(
   decision: Decision,
   proposalId: string,
@@ -133,6 +153,7 @@ async function handleDecision(
     return;
   }
   await respond(responseUrl, await decidedReplacement(decision, proposalId));
+  await disarmOwnPrompt(proposalId);
 }
 
 export const slackInteractions = new Hono<SlackVerifiedEnv>();
