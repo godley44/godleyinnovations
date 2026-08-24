@@ -42,5 +42,6 @@ adminRoutes.post("/deliver-now", async (c) => {
     error: result.state.lastCheckError,
     deliveries: result.state.lastDeliveries,
     prompts: result.state.lastPrompts,
+    framings: result.state.lastFramings,
   });
 });

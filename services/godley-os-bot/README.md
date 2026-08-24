@@ -99,14 +99,16 @@ channel as "WhatsApp message ready" with the text in a code block
 WhatsApp** — the last hop is always the owner pasting into the group by
 hand.
 
-**Current status: the framing call, the delivery/preview renderers, and
-their tests ship now; the poller framing step is awaiting the owner's
-approval of migration 006** — the `proposals.action` CHECK constraint
-(migration 002) does not admit `whatsapp.message`, `apply_proposal()`
-would reject it at approval time, and framing needs its own
-claim-before-run ledger (`framing_jobs`). Schema is never invented here.
-Framing failures, once live, are terminal with the reason recorded —
-delete-the-row-to-re-arm, like every other ledger.
+Framing is tracked in **`framing_jobs`** (migration 006, which also adds
+`whatsapp.message` to the proposals action whitelist and teaches
+`apply_proposal()` to approve it as a no-database-write): claim-before-run
+(`running` → `done`/`failed`, `unique(source_proposal_id)`), exactly one
+framing per brief across restarts, terminal failures with the reason
+recorded — delete-the-row-to-re-arm, like every other ledger. The framing
+step runs after delivery and before the prompts step, so the framed
+proposal's buttons post in the same cycle. Poller steps are isolated: a
+missing migration fails its own step loudly ("run migration 006") while
+deliveries and approvals keep working.
 
 ## Slack approval loop (pending proposals → buttons)
 

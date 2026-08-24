@@ -97,6 +97,9 @@ guard script so it can't happen twice.
   the venture's Slack channel, tracked in `slack_deliveries` (migration 004)
   so it can never double-post. Pending proposals themselves reach Slack as
   Approve/Reject button messages (tracked in `slack_prompts`, migration
-  005), so approval works from the channel as well as the app.
+  005), so approval works from the channel as well as the app. Approved
+  briefs are also reframed once (OpenAI, `framing_jobs`, migration 006)
+  into a `whatsapp.message` proposal — approved the same way, then handed
+  over in Slack as copy-paste text; nothing auto-sends to WhatsApp.
 - `docs/lil-bull-interactive-spec.md` — staged spec for the Slack-phase
   interactive features (not built yet).
