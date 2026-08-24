@@ -54,6 +54,12 @@ function fieldLine(label: string, value: unknown): string | null {
   return `*${esc(label)}:* ${esc(truncate(rendered, FIELD_VALUE_MAX))}`;
 }
 
+// whatsapp.message previews show the WHOLE framed text (in a code block, so
+// the preview is exactly what gets pasted) — approving a message you can
+// only half-see would defeat the human gate. The cap exists only as a Slack
+// hard-limit guard; framed messages are ~1200 chars by construction.
+const WHATSAPP_PREVIEW_MAX = 1500;
+
 // Per-action payload previews. Field names mirror the os-ingest contract
 // (supabase/functions/os-ingest); anything unrecognized falls back to
 // compact field lines so a new action shows up readably instead of as JSON.
@@ -62,6 +68,18 @@ function previewBlocks(action: string, payload: Record<string, unknown>): SlackB
     return [
       section(esc(truncate(payload.text, PREVIEW_MAX))),
       context("Full text lands in the OS after approval."),
+    ];
+  }
+  if (action === "whatsapp.message" && typeof payload.text === "string" && payload.text.trim()) {
+    const full = payload.text.length <= WHATSAPP_PREVIEW_MAX;
+    const fenced = esc(truncate(payload.text, WHATSAPP_PREVIEW_MAX).replace(/`/g, "'"));
+    return [
+      section(`\`\`\`\n${fenced}\n\`\`\``),
+      context(
+        full
+          ? "This exact text is what gets handed over for WhatsApp after approval."
+          : "Preview truncated — the full text gets handed over for WhatsApp after approval.",
+      ),
     ];
   }
   if (action === "ledger.add") {

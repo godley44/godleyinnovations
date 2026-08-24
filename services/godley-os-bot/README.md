@@ -82,6 +82,32 @@ supabase/migrations/004_slack_deliveries.sql" and nothing is posted.
 Slack API calls are plain `fetch` (`src/lib/slack-web.ts`) — no Slack SDK,
 same policy as signature verification.
 
+## WhatsApp framing agent (phase 1 of the social backbone)
+
+When a weekly brief is APPROVED, the framing agent
+(`src/integrations/openai.ts`, plain fetch, `gpt-4o-mini`) rewrites it as a
+WhatsApp-ready message — conversational, headline first, ~1200 chars, no
+tables, 2-4 emoji, one closing question, and **barred from stating any
+market data not present in the source brief** (the system prompt is a
+marked TUNE ME constant). The result is filed as a NEW pending proposal
+(`action='whatsapp.message'`, `proposed_by='framing-agent'`, payload
+`{ text, source_proposal_id }`) that rides the exact same rails as
+everything else: buttons in the channel, approve/reject, disarm — zero new
+approval code. On approval, the delivery step posts it to the venture
+channel as "WhatsApp message ready" with the text in a code block
+(one-tap select-all-copy on mobile). **Nothing ever auto-sends to
+WhatsApp** — the last hop is always the owner pasting into the group by
+hand.
+
+**Current status: the framing call, the delivery/preview renderers, and
+their tests ship now; the poller framing step is awaiting the owner's
+approval of migration 006** — the `proposals.action` CHECK constraint
+(migration 002) does not admit `whatsapp.message`, `apply_proposal()`
+would reject it at approval time, and framing needs its own
+claim-before-run ledger (`framing_jobs`). Schema is never invented here.
+Framing failures, once live, are terminal with the reason recorded —
+delete-the-row-to-re-arm, like every other ledger.
+
 ## Slack approval loop (pending proposals → buttons)
 
 The sibling flow to report delivery: PENDING proposals are posted to the
