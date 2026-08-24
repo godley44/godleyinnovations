@@ -59,18 +59,21 @@ function healthStatusText(): string {
   const lastPrompt = state.lastPromptPostedAt ? formatUtc(new Date(state.lastPromptPostedAt)) : "none yet";
   const failure =
     state.lastCheckOk === false ? ` Last check FAILED: ${state.lastCheckError ?? "unknown error"}.` : "";
+  const lastFramed = state.lastFramedAt ? formatUtc(new Date(state.lastFramedAt)) : "none yet";
   const needsAttention = (s: string) =>
-    s === "failed" || s === "previously-failed" || s === "posting-stuck" || s === "already-disarmed";
+    s === "failed" || s === "previously-failed" || s === "posting-stuck" || s === "already-disarmed" || s === "framing-stuck";
   const attention =
     state.lastDeliveries.filter((c) => needsAttention(c.status)).length +
-    state.lastPrompts.filter((c) => needsAttention(c.status)).length;
+    state.lastPrompts.filter((c) => needsAttention(c.status)).length +
+    state.lastFramings.filter((c) => needsAttention(c.status)).length;
   const awaiting = state.lastPrompts.filter(
     (c) => c.status === "posted" || c.status === "already-posted",
   ).length;
   return (
     `godley-os-bot v${BOT_VERSION} · poller: ${poller} · last successful check: ${lastOk} · ` +
     `approvals awaiting decision in Slack: ${awaiting} · last buttons post: ${lastPrompt} · ` +
-    `last report delivered: ${lastDelivered} · needs attention: ${attention}.${failure}`
+    `last report delivered: ${lastDelivered} · last WhatsApp framing: ${lastFramed} · ` +
+    `needs attention: ${attention}.${failure}`
   );
 }
 

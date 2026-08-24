@@ -1,6 +1,6 @@
 {
   "name": "godley-os-bot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Slack bot backend for the Godley Innovations OS: events in, signatures verified, approvals written to Supabase.",
@@ -18,8 +18,7 @@
     "@anthropic-ai/sdk": "^0.117.1",
     "@hono/node-server": "^1.14.0",
     "@supabase/supabase-js": "^2.48.0",
-    "hono": "^4.7.0",
-    "openai": "^5.16.0"
+    "hono": "^4.7.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

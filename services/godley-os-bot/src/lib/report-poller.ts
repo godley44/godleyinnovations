@@ -1,16 +1,29 @@
-// The bot's background cycle (every 60s), three steps over the approvals
-// pipeline, each tracked in its own ledger so restarts can never double-post:
+// The bot's background cycle (every 60s), four steps over the approvals
+// pipeline, each tracked in its own ledger so restarts can never double-run:
 //
-//  A. DELIVERY — approved weekly-insight proposals → post the brief to the
-//     venture's channel; tracked in slack_deliveries (migration 004).
-//  B. PROMPTS  — PENDING proposals (any action) → post an Approval-needed
+//  A. DELIVERY — approved weekly-insight briefs AND approved
+//     whatsapp.message proposals → posted to the venture's channel (brief
+//     layout / WhatsApp hand-off layout); tracked in slack_deliveries
+//     (migration 004).
+//  B. FRAMING  — each approved weekly-insight brief is reframed ONCE by the
+//     OpenAI framing agent and filed as a new pending whatsapp.message
+//     proposal (proposed_by 'framing-agent'); tracked in framing_jobs
+//     (migration 006). The new proposal then rides the normal rails below —
+//     framing runs before the prompts step so its buttons post in the same
+//     cycle. Nothing ever auto-sends to WhatsApp; the last hop is a manual
+//     paste.
+//  C. PROMPTS  — PENDING proposals (any action) → post an Approval-needed
 //     message with Approve/Reject buttons wired to the interactions route;
 //     tracked in slack_prompts (migration 005).
-//  C. DISARM   — slack_prompts rows still 'posted' whose proposal is no
+//  D. DISARM   — slack_prompts rows still 'posted' whose proposal is no
 //     longer pending (decided in the app inbox, or the interactions route
 //     failed to re-render) → chat.update the message to the decided layout
 //     and mark the row 'disarmed'. Buttons never stay live for a decided
 //     proposal.
+//
+// Steps are isolated: each runs in its own try/catch and a failure in one
+// (say, a migration not yet run by hand) never blocks the others — the
+// cycle reports every step error, loudly, instead of dying on the first.
 //
 // Channel routing everywhere: the channel whose name equals ventures.slug
 // (the venture-map.ts convention, applied venture→channel).
@@ -32,10 +45,12 @@
 // deployed ahead of the hand-run migration 005 keeps delivering briefs while
 // the prompt steps fail loudly with "run migration 005".
 
+import { frameForWhatsApp } from "../integrations/openai.js";
 import { buildApprovalPrompt, buildDecidedMessage } from "./approval-blocks.js";
 import { buildBriefMessage } from "./brief-blocks.js";
 import { getSupabase } from "./supabase.js";
 import { listChannelsByName, postMessage, updateMessage, type SlackChannel } from "./slack-web.js";
+import { buildWhatsAppDelivery } from "./whatsapp-blocks.js";
 
 const POLL_INTERVAL_MS = 60 * 1000;
 const POLL_LIMIT = 10;
@@ -82,6 +97,22 @@ export interface PromptCandidate {
   detail?: string;
 }
 
+export type FramingStatus =
+  | "framed" // framed and filed as a pending proposal this cycle
+  | "already-framed"
+  | "failed" // recorded as failed this cycle (reason in detail)
+  | "previously-failed"
+  | "framing-stuck"; // claimed but never finalized — needs the owner's eyes
+
+export interface FramingCandidate {
+  sourceProposalId: string;
+  ventureSlug: string;
+  ventureName: string;
+  status: FramingStatus;
+  framedProposalId?: string;
+  detail?: string;
+}
+
 export interface PollerState {
   intervalRunning: boolean;
   lastCheckAt: string | null;
@@ -90,8 +121,10 @@ export interface PollerState {
   lastCheckError: string | null;
   lastDeliveredAt: string | null;
   lastPromptPostedAt: string | null;
+  lastFramedAt: string | null;
   lastDeliveries: DeliveryCandidate[];
   lastPrompts: PromptCandidate[];
+  lastFramings: FramingCandidate[];
 }
 
 const state: PollerState = {
@@ -102,12 +135,19 @@ const state: PollerState = {
   lastCheckError: null,
   lastDeliveredAt: null,
   lastPromptPostedAt: null,
+  lastFramedAt: null,
   lastDeliveries: [],
   lastPrompts: [],
+  lastFramings: [],
 };
 
 export function getPollerState(): PollerState {
-  return { ...state, lastDeliveries: [...state.lastDeliveries], lastPrompts: [...state.lastPrompts] };
+  return {
+    ...state,
+    lastDeliveries: [...state.lastDeliveries],
+    lastPrompts: [...state.lastPrompts],
+    lastFramings: [...state.lastFramings],
+  };
 }
 
 interface ProposalRow {
@@ -118,6 +158,7 @@ interface ProposalRow {
   proposed_by: string;
   status: string;
   payload: unknown;
+  venture_id: string | null;
   venture: { name: string; slug: string } | null;
 }
 
@@ -143,7 +184,29 @@ function normalizeProposal(raw: unknown): ProposalRow | null {
     proposed_by: typeof row.proposed_by === "string" ? row.proposed_by : "automation",
     status: typeof row.status === "string" ? row.status : "unknown",
     payload: row.payload,
+    venture_id: typeof row.venture_id === "string" ? row.venture_id : null,
     venture,
+  };
+}
+
+// The exact proposals row the framing step files — exported for the payload
+// shape test. The venture is decided by the SOURCE proposal, never by the
+// model; source_proposal_id in the payload ties the framed message back to
+// the brief it came from.
+export function framedProposalRow(
+  source: { id: string; venture_id: string },
+  framedText: string,
+): {
+  venture_id: string;
+  action: "whatsapp.message";
+  proposed_by: "framing-agent";
+  payload: { text: string; source_proposal_id: string };
+} {
+  return {
+    venture_id: source.venture_id,
+    action: "whatsapp.message",
+    proposed_by: "framing-agent",
+    payload: { text: framedText, source_proposal_id: source.id },
   };
 }
 
@@ -244,20 +307,48 @@ function resolveChannel(
   return { channel };
 }
 
-// --- Step A: deliver approved weekly-insight briefs ------------------------
+const PROPOSAL_COLS =
+  "id, created_at, decided_at, action, proposed_by, status, payload, venture_id, venture:ventures(name, slug)";
 
-async function runDeliveryStep(channels: () => Promise<Map<string, SlackChannel>>): Promise<DeliveryCandidate[]> {
-  const { data, error } = await getSupabase()
+// Approved proposals the bot acts on: weekly-insight briefs (delivered as
+// the brief layout AND framed for WhatsApp) and framed whatsapp.message
+// proposals (delivered as the hand-off layout).
+async function fetchApprovedWork(): Promise<{ briefs: ProposalRow[]; whatsapp: ProposalRow[] }> {
+  const supabase = getSupabase();
+  const briefsQuery = supabase
     .from("proposals")
-    .select("id, created_at, decided_at, action, proposed_by, status, payload, venture:ventures(name, slug)")
+    .select(PROPOSAL_COLS)
     .eq("action", "note.append")
     .eq("proposed_by", "weekly-insight")
     .eq("status", "approved")
     .order("decided_at", { ascending: false })
     .limit(POLL_LIMIT);
-  if (error) throw new Error(`proposals query failed: ${error.message}`);
+  const whatsappQuery = supabase
+    .from("proposals")
+    .select(PROPOSAL_COLS)
+    .eq("action", "whatsapp.message")
+    .eq("status", "approved")
+    .order("decided_at", { ascending: false })
+    .limit(POLL_LIMIT);
+  const [briefsRes, whatsappRes] = [await briefsQuery, await whatsappQuery];
+  if (briefsRes.error) throw new Error(`proposals query failed: ${briefsRes.error.message}`);
+  // A database without migration 006 has no whatsapp.message rows, and this
+  // filter query still succeeds against it (the CHECK constraint is not
+  // consulted on reads) — so only a real error is thrown here.
+  if (whatsappRes.error) throw new Error(`proposals query failed: ${whatsappRes.error.message}`);
+  const normalize = (data: unknown[] | null) =>
+    (data ?? []).map(normalizeProposal).filter((r): r is ProposalRow => r !== null && r.venture !== null);
+  return { briefs: normalize(briefsRes.data), whatsapp: normalize(whatsappRes.data) };
+}
 
-  const rows = (data ?? []).map(normalizeProposal).filter((r): r is ProposalRow => r !== null && r.venture !== null);
+// --- Step A: deliver approved briefs + approved WhatsApp hand-offs ---------
+
+async function runDeliveryStep(
+  briefs: ProposalRow[],
+  whatsapp: ProposalRow[],
+  channels: () => Promise<Map<string, SlackChannel>>,
+): Promise<DeliveryCandidate[]> {
+  const rows = [...briefs, ...whatsapp];
   const tracker = await loadTrackerRows("slack_deliveries", "004_slack_deliveries.sql", rows.map((r) => r.id));
 
   const candidates: DeliveryCandidate[] = [];
@@ -331,11 +422,18 @@ async function runDeliveryStep(channels: () => Promise<Map<string, SlackChannel>
     }
 
     candidate.channelId = channelId!;
-    const message = buildBriefMessage({
-      briefText: briefText as string,
-      ventureName: venture.name,
-      generatedAt: new Date(row.created_at),
-    });
+    const message =
+      row.action === "whatsapp.message"
+        ? buildWhatsAppDelivery({
+            framedText: briefText as string,
+            ventureName: venture.name,
+            generatedAt: new Date(row.created_at),
+          })
+        : buildBriefMessage({
+            briefText: briefText as string,
+            ventureName: venture.name,
+            generatedAt: new Date(row.created_at),
+          });
 
     let messageTs: string;
     try {
@@ -382,12 +480,162 @@ async function runDeliveryStep(channels: () => Promise<Map<string, SlackChannel>
   return candidates;
 }
 
-// --- Step B: post Approve/Reject prompts for pending proposals -------------
+// --- Step B: frame approved briefs for WhatsApp ----------------------------
+
+async function runFramingStep(briefs: ProposalRow[]): Promise<FramingCandidate[]> {
+  const tracker = new Map<string, TrackerRow>();
+  if (briefs.length > 0) {
+    const { data, error } = await getSupabase()
+      .from("framing_jobs")
+      .select("source_proposal_id, status, error")
+      .in(
+        "source_proposal_id",
+        briefs.map((r) => r.id),
+      );
+    if (error) throw new Error(tableErrorMessage(error.message, error.code, "framing_jobs", "006_whatsapp_framing.sql"));
+    for (const raw of data ?? []) {
+      const d = raw as Record<string, unknown>;
+      if (typeof d.source_proposal_id === "string" && typeof d.status === "string") {
+        tracker.set(d.source_proposal_id, {
+          status: d.status,
+          error: typeof d.error === "string" ? d.error : null,
+          channel_id: null,
+          message_ts: null,
+        });
+      }
+    }
+  }
+
+  const candidates: FramingCandidate[] = [];
+  for (const row of briefs) {
+    const venture = row.venture!;
+    const candidate: FramingCandidate = {
+      sourceProposalId: row.id,
+      ventureSlug: venture.slug,
+      ventureName: venture.name,
+      status: "already-framed",
+    };
+
+    const existing = tracker.get(row.id);
+    if (existing) {
+      if (existing.status === "failed") {
+        candidate.status = "previously-failed";
+        candidate.detail = existing.error ?? "no reason recorded";
+        logOnce(row.id, `[poller] framing of ${row.id} (${venture.slug}) previously failed: ${candidate.detail}`, true);
+      } else if (existing.status === "running") {
+        candidate.status = "framing-stuck";
+        candidate.detail =
+          "claimed but never finalized (bot likely died mid-call) — check whether a framed proposal " +
+          "exists for this brief; delete the framing_jobs row only if it does NOT";
+        logOnce(row.id, `[poller] NEEDS ATTENTION: framing of ${row.id} is ${candidate.detail}`, true);
+      }
+      candidates.push(candidate);
+      continue;
+    }
+
+    // Fail fast on unusable sources before claiming.
+    const payload = (row.payload ?? {}) as Record<string, unknown>;
+    const briefText = payload.text;
+    const sourceProblem =
+      typeof briefText !== "string" || !briefText.trim()
+        ? "source payload.text is missing or empty — nothing to frame"
+        : row.venture_id === null
+          ? "source proposal has no venture_id — cannot file the framed proposal"
+          : null;
+
+    // CLAIM before calling OpenAI — same protocol as posting; a conflict
+    // means another run owns this brief.
+    const { error: claimError } = await getSupabase()
+      .from("framing_jobs")
+      .insert({ source_proposal_id: row.id, status: "running" });
+    if (claimError) {
+      if (claimError.code === UNIQUE_VIOLATION) {
+        candidate.status = "framing-stuck";
+        candidate.detail = "another writer claimed this framing between read and claim — not framing";
+        console.error(`[poller] framing claim conflict on ${row.id} (${venture.slug}) — skipped`);
+        candidates.push(candidate);
+        continue;
+      }
+      throw new Error(tableErrorMessage(claimError.message, claimError.code, "framing_jobs", "006_whatsapp_framing.sql"));
+    }
+
+    const failJob = async (reason: string) => {
+      candidate.status = "failed";
+      candidate.detail = reason;
+      console.error(`[poller] FRAMING FAILED: ${row.id} (${venture.slug}): ${reason}`);
+      const { error: failError } = await getSupabase()
+        .from("framing_jobs")
+        .update({ status: "failed", error: reason })
+        .eq("source_proposal_id", row.id);
+      if (failError) {
+        // Row stays 'running' — safe (never re-framed), but say so loudly.
+        console.error(
+          `[poller] CRITICAL: could not record the framing failure for ${row.id} (${failError.message}); ` +
+            "its framing_jobs row remains 'running'",
+        );
+      }
+    };
+
+    if (sourceProblem) {
+      await failJob(sourceProblem);
+      candidates.push(candidate);
+      continue;
+    }
+
+    let framedText: string;
+    try {
+      framedText = await frameForWhatsApp(briefText as string);
+    } catch (err) {
+      await failJob(err instanceof Error ? err.message : String(err));
+      candidates.push(candidate);
+      continue;
+    }
+
+    const { data: framedRow, error: insertError } = await getSupabase()
+      .from("proposals")
+      .insert(framedProposalRow({ id: row.id, venture_id: row.venture_id! }, framedText))
+      .select("id")
+      .single();
+    if (insertError || !framedRow) {
+      await failJob(
+        `filing the framed proposal failed: ${insertError?.message ?? "no row returned"}` +
+          (/proposals_action_check/.test(insertError?.message ?? "")
+            ? " — run supabase/migrations/006_whatsapp_framing.sql (the action whitelist part)"
+            : ""),
+      );
+      candidates.push(candidate);
+      continue;
+    }
+
+    const framedId = (framedRow as { id: string }).id;
+    const { error: doneError } = await getSupabase()
+      .from("framing_jobs")
+      .update({ status: "done", framed_proposal_id: framedId })
+      .eq("source_proposal_id", row.id);
+    candidate.status = "framed";
+    candidate.framedProposalId = framedId;
+    state.lastFramedAt = new Date().toISOString();
+    if (doneError) {
+      // The framed proposal exists; the job row stays 'running'. Deleting it
+      // would frame (and file) a second copy — surface it instead.
+      candidate.detail =
+        `framed proposal ${framedId} filed, but recording 'done' failed: ${doneError.message}. ` +
+        "The framing_jobs row remains 'running' — do NOT delete it.";
+      console.error(`[poller] CRITICAL: ${candidate.detail}`);
+    } else {
+      console.log(`[poller] framed brief ${row.id} (${venture.slug}) → whatsapp.message proposal ${framedId}`);
+    }
+    candidates.push(candidate);
+  }
+  return candidates;
+}
+
+// --- Step C: post Approve/Reject prompts for pending proposals -------------
 
 async function runPromptStep(channels: () => Promise<Map<string, SlackChannel>>): Promise<PromptCandidate[]> {
   const { data, error } = await getSupabase()
     .from("proposals")
-    .select("id, created_at, decided_at, action, proposed_by, status, payload, venture:ventures(name, slug)")
+    .select(PROPOSAL_COLS)
     .eq("status", "pending")
     .order("created_at", { ascending: true })
     .limit(POLL_LIMIT);
@@ -513,7 +761,7 @@ async function runPromptStep(channels: () => Promise<Map<string, SlackChannel>>)
   return candidates;
 }
 
-// --- Step C: disarm prompts whose proposal was decided elsewhere -----------
+// --- Step D: disarm prompts whose proposal was decided elsewhere -----------
 
 async function runDisarmStep(): Promise<PromptCandidate[]> {
   const { data, error } = await getSupabase()
@@ -533,7 +781,7 @@ async function runDisarmStep(): Promise<PromptCandidate[]> {
 
   const { data: pData, error: pError } = await getSupabase()
     .from("proposals")
-    .select("id, created_at, decided_at, action, proposed_by, status, payload, venture:ventures(name, slug)")
+    .select(PROPOSAL_COLS)
     .in(
       "id",
       prompts.map((p) => p.proposal_id),
@@ -618,21 +866,54 @@ export async function runPollCycle(): Promise<CycleResult> {
   if (cycleInFlight) return { skipped: true, state: getPollerState() };
   cycleInFlight = true;
   const startedAt = new Date().toISOString();
+  const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+  const stepErrors: string[] = [];
   try {
     // Slack's channel roster is fetched at most once per cycle, and only if
     // some step actually needs it.
     let channelsPromise: Promise<Map<string, SlackChannel>> | null = null;
     const channels = () => (channelsPromise ??= listChannelsByName());
 
-    state.lastDeliveries = await runDeliveryStep(channels);
-    state.lastPrompts = [...(await runPromptStep(channels)), ...(await runDisarmStep())];
+    const { briefs, whatsapp } = await fetchApprovedWork();
+
+    try {
+      state.lastDeliveries = await runDeliveryStep(briefs, whatsapp, channels);
+    } catch (err) {
+      stepErrors.push(`delivery: ${errorText(err)}`);
+    }
+    try {
+      state.lastFramings = await runFramingStep(briefs);
+    } catch (err) {
+      stepErrors.push(`framing: ${errorText(err)}`);
+    }
+    let prompts: PromptCandidate[] = [];
+    try {
+      prompts = await runPromptStep(channels);
+    } catch (err) {
+      stepErrors.push(`prompts: ${errorText(err)}`);
+    }
+    let disarmed: PromptCandidate[] = [];
+    try {
+      disarmed = await runDisarmStep();
+    } catch (err) {
+      stepErrors.push(`disarm: ${errorText(err)}`);
+    }
+    state.lastPrompts = [...prompts, ...disarmed];
 
     state.lastCheckAt = startedAt;
-    state.lastSuccessAt = startedAt;
-    state.lastCheckOk = true;
-    state.lastCheckError = null;
+    if (stepErrors.length === 0) {
+      state.lastSuccessAt = startedAt;
+      state.lastCheckOk = true;
+      state.lastCheckError = null;
+    } else {
+      state.lastCheckOk = false;
+      state.lastCheckError = stepErrors.join("; ");
+      console.error(`[poller] cycle finished with step failures — ${state.lastCheckError}`);
+    }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // The shared proposals fetch (or something structural) failed — nothing
+    // downstream could run.
+    const message = errorText(err);
     state.lastCheckAt = startedAt;
     state.lastCheckOk = false;
     state.lastCheckError = message;
@@ -646,7 +927,9 @@ export async function runPollCycle(): Promise<CycleResult> {
 export function startReportPoller(): void {
   if (state.intervalRunning) return;
   state.intervalRunning = true;
-  console.log(`[poller] started (every ${POLL_INTERVAL_MS / 1000}s: deliveries, approval prompts, disarm)`);
+  console.log(
+    `[poller] started (every ${POLL_INTERVAL_MS / 1000}s: deliveries, WhatsApp framing, approval prompts, disarm)`,
+  );
   const tick = () => {
     runPollCycle().catch((err) => {
       console.error("[poller] tick failed unexpectedly:", err);
