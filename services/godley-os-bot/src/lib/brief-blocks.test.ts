@@ -16,17 +16,17 @@ const DISCLAIMER = "Analysis, not financial advice — trade your own plan.";
 const FULL_BRIEF = [
   "Lil Bull Weekly Market Brief — week of 2026-08-17",
   [
-    "SPX: Bullish - key level 6465.2 (daily SMA50)",
-    "NASDAQ: Neutral - key level 21497.73 (latest close)",
-    "DOW: Bearish - key level 44175.61 (20-session low)",
+    "S&P 500: Bullish - key level 7652.86 (daily SMA50)",
+    "SNDK: Neutral - key level $1493.12 (latest close)",
+    "INTEL: Bearish - key level $84.20 (20-session low)",
   ].join("\n"),
-  "SPX: data unavailable this week (feed error).",
+  "SNDK: data unavailable this week (feed error).",
   [
     "Timeframes:",
-    "SPX: 1H MA↑(3b) MACD+↑ SRSI 62 | 1D +1.2% MA↑(21b) MACD+↑ SRSI 71ob | 1W +2.4% MA↑(8b) MACD+↑ SRSI 55",
+    "S&P 500: 1H MA↑(3b) MACD+↑ SRSI 62 | 1D +1.2% MA↑(21b) MACD+↑ SRSI 71ob | 1W +2.4% MA↑(8b) MACD+↑ SRSI 55",
     "  1M +3.1% MA↑(since 2023-11-30) | 3M +8.2% MA↑(since 2024-02-29) | 1Y +14.9% MA↑(since 2023-12-01)",
-    "NASDAQ: 1H MA↓(2b) MACD-↓ SRSI 34 | 1D +0.4% MA↑(12b) MACD+↓ SRSI 48 | 1W +1.9% MA↑(6b) MACD+↑ SRSI 51",
-    "  1M +2.7% MA↑(since 2023-12-29) | 3M +9.5% MA↑(since 2024-02-29) | 1Y +18.2% MA↑(since 2023-11-28)",
+    "INTEL: 1H MA↓(2b) MACD-↓ SRSI 34 | 1D +0.4% MA↑(12b) MACD+↓ SRSI 48 | 1W +1.9% MA↑(6b) MACD+↑ SRSI 51",
+    "  1M +2.7% MA↑(since 2023-12-29) | 3M MA n/a | 1Y +18.2% MA↑(since 2023-11-28)",
   ].join("\n"),
   ["This week:", "- Wed: FOMC minutes", "- Thu: initial jobless claims", "- Fri: Powell speaks at Jackson Hole"].join(
     "\n",
@@ -76,11 +76,12 @@ test("footer is the last block: generated timestamp + Godley Innovations OS", ()
   assert.equal(text, "Generated 2026-08-17 13:05 UTC · Godley Innovations OS");
 });
 
-test("stances render as a labeled section with bold index names", () => {
+test("stances render as a labeled section with bold names, dollar levels intact", () => {
   const stances = sectionTexts(build().blocks).find((t) => t.startsWith("*Stances*"));
   assert.ok(stances, "no *Stances* section");
-  assert.match(stances, /\*SPX:\* Bullish - key level 6465\.2 \(daily SMA50\)/);
-  assert.match(stances, /\*DOW:\* Bearish/);
+  assert.match(stances, /\*S&amp;P 500:\* Bullish - key level 7652\.86 \(daily SMA50\)/);
+  assert.match(stances, /\*SNDK:\* Neutral - key level \$1493\.12 \(latest close\)/);
+  assert.match(stances, /\*INTEL:\* Bearish/);
 });
 
 test("timeframe table renders inside a code block, cells intact", () => {
@@ -88,7 +89,8 @@ test("timeframe table renders inside a code block, cells intact", () => {
   assert.ok(table, "no *Timeframes* section");
   assert.match(table, /^\*Timeframes\*\n```\n/);
   assert.match(table, /```$/);
-  assert.ok(table.includes("SPX: 1H MA↑(3b) MACD+↑ SRSI 62 | 1D +1.2% MA↑(21b) MACD+↑ SRSI 71ob"));
+  assert.ok(table.includes("INTEL: 1H MA↓(2b) MACD-↓ SRSI 34 | 1D +0.4% MA↑(12b) MACD+↓ SRSI 48"));
+  assert.ok(table.includes("S&amp;P 500: 1H"), "entities stay escaped even inside the code block");
 });
 
 test("calendar items become bullets", () => {
@@ -107,7 +109,7 @@ test("sentiment and lean get bold labels; mrkdwn entities are escaped", () => {
 });
 
 test("feed-error note is flagged as a warning", () => {
-  assert.ok(sectionTexts(build().blocks).some((t) => t === "⚠️ SPX: data unavailable this week (feed error)."));
+  assert.ok(sectionTexts(build().blocks).some((t) => t === "⚠️ SNDK: data unavailable this week (feed error)."));
 });
 
 test("legend and disclaimer are context blocks, not sections", () => {

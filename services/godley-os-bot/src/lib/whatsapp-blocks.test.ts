@@ -7,10 +7,26 @@ import { buildWhatsAppDelivery } from "./whatsapp-blocks.js";
 import { buildApprovalPrompt } from "./approval-blocks.js";
 import type { SlackBlock } from "./brief-blocks.js";
 
-const FRAMED =
-  "📈 Big picture for the week: the S&P is still riding its uptrend. " +
-  "Momentum cooled a touch on the daily, so patience beats chasing. " +
-  "Not financial advice — trade your plan. What's everyone watching this week?";
+// Shaped like the owner-approved WhatsApp template the framing agent targets.
+const FRAMED = [
+  "🐂 LIL BULL — WEEKLY MARKET BRIEF",
+  "📅 Week of 2026-08-24",
+  "Market Outlook",
+  "🟢 S&P 500: Bullish",
+  "🟡 SNDK: Neutral",
+  "🔴 INTEL: Bearish",
+  "⚖️ Weekly Lean: LONG — Medium Conviction",
+  "Trend intact on the index while the chip names diverge; patience beats chasing.",
+  "Key Levels",
+  "- S&P 500: 7652.86",
+  "- SNDK: $1493.12",
+  "- INTEL: $84.20",
+  "📆 What Matters This Week",
+  "- Wed: FOMC minutes",
+  "- Thu: INTC guidance update",
+  "Bottom Line: The index holding its daily trend confirms the long lean; a close under the INTEL level invalidates its setup.",
+  "Analysis only — not financial advice. Trade your own plan.",
+].join("\n");
 
 function build() {
   return buildWhatsAppDelivery({
@@ -32,7 +48,9 @@ test("delivery: one-line header + framed text in a code block", () => {
   const body = sectionTexts(blocks)[0] ?? "";
   assert.ok(body.startsWith("```\n"), "framed text must sit in a code block for one-tap copy");
   assert.ok(body.endsWith("\n```"));
-  assert.ok(body.includes("What's everyone watching this week?"));
+  assert.ok(body.includes("🟡 SNDK: Neutral"), "template stance lines survive intact");
+  assert.ok(body.includes("🟢 S&amp;P 500: Bullish"), "entities escaped inside the block");
+  assert.ok(body.includes("Analysis only — not financial advice. Trade your own plan."));
   assert.equal(text, "WhatsApp message ready — Lil Bull");
 });
 
@@ -45,7 +63,7 @@ test("delivery: copy hint and OS footer are context blocks", () => {
 
 test("delivery: backticks in the framed text cannot break the code fence; entities escaped", () => {
   const { blocks } = buildWhatsAppDelivery({
-    framedText: "watch `SPX` & the ``` fence",
+    framedText: "watch `SNDK` & the ``` fence",
     ventureName: "Lil Bull",
     generatedAt: new Date("2026-08-25T14:00:00Z"),
   });
@@ -69,7 +87,10 @@ test("approval preview for whatsapp.message shows the full text in a code block"
   });
   const preview = sectionTexts(blocks).find((t) => t.startsWith("```"));
   assert.ok(preview, "whatsapp.message preview must be a code block");
-  assert.ok(preview.includes("What's everyone watching this week?"), "the FULL framed text must be visible");
+  assert.ok(
+    preview.includes("Analysis only — not financial advice. Trade your own plan."),
+    "the FULL framed text must be visible",
+  );
   const note = blocks.find((b) => b.type === "context");
   assert.match(note?.type === "context" ? (note.elements[0]?.text ?? "") : "", /This exact text is what gets handed over/);
   const actions = blocks.find((b) => b.type === "actions");

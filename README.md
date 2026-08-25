@@ -87,7 +87,7 @@ guard script so it can't happen twice.
   a Slack instruction, calls the Claude API, returns `{ reply, osUpdate }`.
   Proposes only — the router decides what gets filed and for which venture.
 - `supabase/functions/weekly-insight/` — the Lil Bull Weekly Market Brief:
-  fetches real index candles (S&P 500, NASDAQ, Dow), computes MACD /
+  fetches real price candles (S&P 500, SNDK, INTC), computes MACD /
   StochRSI / MA-cross per timeframe in code (`indicators.ts`, guarded by
   `scripts/check-indicators.mjs` — the model never states a number it
   wasn't handed), adds calendar/sentiment via web search, and files the
