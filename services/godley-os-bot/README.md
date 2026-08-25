@@ -99,6 +99,32 @@ channel as "WhatsApp message ready" with the text in a code block
 WhatsApp** — the last hop is always the owner pasting into the group by
 hand.
 
+## Social publishing (phase 2 of the social backbone)
+
+Social posts become OS objects: drafted into a content calendar, approved
+through the same proposal rails as everything else, then published to the
+venture's platform stack via the Blotato API
+(`src/integrations/blotato.ts` — plain fetch against
+`https://backend.blotato.com/v2`, auth header `blotato-api-key`, schemas
+verified against help.blotato.com/api). Publishing is asynchronous on
+Blotato's side: a publish answers with a `postSubmissionId` and the real
+outcome (`published` + public URL, or terminal `failed` — their docs say
+"do not retry on failed") comes from the status endpoint.
+
+**Dry run**: with no real key (the Render env ships the placeholder
+`pending` — generating a real key starts Blotato billing) or
+`BLOTATO_DRY_RUN=1`, `publishPost()` logs the exact request it would send
+and returns an explicit dry-run result, so the whole approval→publish
+chain is testable before the key exists. Per-platform rules are enforced
+at request-build time (YouTube requires a video mediaUrl plus
+title/privacy flags; text-only posts can target X/Twitter and LinkedIn).
+
+**Current status: the Blotato client, per-platform request builders, the
+publish-summary rendering, and their tests ship now; the content calendar,
+venture platform stacks, the `social.post` proposal action, and the
+poller's publish step are awaiting the owner's approval of migration 007.**
+Schema is never invented here — same stop as 004/005/006.
+
 Framing is tracked in **`framing_jobs`** (migration 006, which also adds
 `whatsapp.message` to the proposals action whitelist and teaches
 `apply_proposal()` to approve it as a no-database-write): claim-before-run

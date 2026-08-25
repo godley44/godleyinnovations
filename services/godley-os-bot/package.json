@@ -1,6 +1,6 @@
 {
   "name": "godley-os-bot",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Slack bot backend for the Godley Innovations OS: events in, signatures verified, approvals written to Supabase.",
