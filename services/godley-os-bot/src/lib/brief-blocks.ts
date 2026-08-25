@@ -5,7 +5,7 @@
 // assembled deterministically by supabase/functions/weekly-insight):
 // blank-line-separated sections whose labels are stable ("Timeframes:",
 // "This week:", "Sentiment:", "Week lean:", "Legend — ", the disclaimer,
-// stance lines like "SPX: Bullish - key level ..."). Sections are matched by
+// stance lines like "S&P 500: Bullish - key level ..."). Sections are matched by
 // label, not position, and any section this module doesn't recognize is
 // passed through as its own block — a new section added to the brief shows
 // up in Slack instead of silently disappearing.

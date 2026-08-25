@@ -55,12 +55,20 @@ test("request: endpoint, method, auth header shape, model, message roles", async
   assert.ok(captured.init.signal instanceof AbortSignal, "a timeout signal must be attached");
 });
 
-test("system prompt carries the non-negotiables: no invented data, length cap, question, no tables", () => {
-  assert.match(FRAMING_SYSTEM_PROMPT, /NEVER state a price.*not present in the source brief/s);
+test("system prompt carries the non-negotiables: template, emojis, no invented data, cap, disclaimer", () => {
+  assert.ok(FRAMING_SYSTEM_PROMPT.includes("🐂 LIL BULL — WEEKLY MARKET BRIEF"), "template header");
+  assert.ok(FRAMING_SYSTEM_PROMPT.includes("🟢 bullish, 🟡 neutral, 🔴 bearish"), "stance emoji mapping");
+  assert.ok(
+    FRAMING_SYSTEM_PROMPT.includes("SNDK") && FRAMING_SYSTEM_PROMPT.includes("INTEL"),
+    "current ticker lineup",
+  );
+  assert.match(FRAMING_SYSTEM_PROMPT, /NEVER state a number or market fact that is not present/);
   assert.match(FRAMING_SYSTEM_PROMPT, /1200 characters/);
-  assert.match(FRAMING_SYSTEM_PROMPT, /one engaging question/);
-  assert.match(FRAMING_SYSTEM_PROMPT, /No tables/i);
-  assert.match(FRAMING_SYSTEM_PROMPT, /Emoji: sparing — 2 to 4/);
+  assert.match(FRAMING_SYSTEM_PROMPT, /no markdown tables/i);
+  assert.ok(
+    FRAMING_SYSTEM_PROMPT.includes('verbatim: "Analysis only — not financial advice. Trade your own plan."'),
+    "mandatory verbatim disclaimer",
+  );
 });
 
 test("API error surfaces OpenAI's message and status — never the key", async () => {

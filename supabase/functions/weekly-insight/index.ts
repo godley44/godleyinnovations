@@ -1,11 +1,15 @@
 // weekly-insight v2: the Lil Bull Weekly Market Brief.
 //
 // Data first, then words. The pipeline fetches real price candles for the
-// S&P 500 (^GSPC), NASDAQ Composite (^IXIC), and Dow (^DJI) from Yahoo's
-// chart API (keyless; the one unofficial-source concession — swap lives
-// entirely in yahooCandles()), computes MACD / StochRSI / MA-cross states in
-// code (indicators.ts, guarded by scripts/check-indicators.mjs), and builds
-// the timeframe table DETERMINISTICALLY. The model writes only the prose
+// S&P 500 (^GSPC, the market backdrop) and two stocks — SanDisk (SNDK) and
+// Intel (INTC) — from Yahoo's chart API (keyless; the one unofficial-source
+// concession — swap lives entirely in yahooCandles(); the endpoint is
+// identical for equities and indexes), computes MACD / StochRSI / MA-cross
+// states in code (indicators.ts, guarded by scripts/check-indicators.mjs),
+// and builds the timeframe table DETERMINISTICALLY. Young listings degrade
+// gracefully: SNDK only trades since 2025-02, so its monthly/quarterly
+// SMA50/200 rows render "MA n/a" until it has the history — expected, not
+// a feed error. The model writes only the prose
 // around it — stances, calendar, sentiment, lean — from the computed values
 // it is handed, plus web search for calendar/news. It is barred from stating
 // any market number that isn't in MARKET_DATA. A failed feed renders "data
@@ -46,10 +50,12 @@ function reply(status: number, body: Json): Response {
   });
 }
 
+// `short` is the name the brief prints everywhere (table, stances, notes);
+// `unit` prefixes key levels — "$" for stocks, "" for the index (points).
 const INDEXES = [
-  { symbol: "^GSPC", label: "S&P 500", short: "SPX" },
-  { symbol: "^IXIC", label: "NASDAQ Composite", short: "NASDAQ" },
-  { symbol: "^DJI", label: "Dow Jones Industrial Average", short: "DOW" },
+  { symbol: "^GSPC", label: "S&P 500", short: "S&P 500", unit: "" },
+  { symbol: "SNDK", label: "SanDisk", short: "SNDK", unit: "$" },
+  { symbol: "INTC", label: "Intel", short: "INTEL", unit: "$" },
 ];
 
 // Frame config: candle interval + range fetched + MA pair.
@@ -93,6 +99,7 @@ async function yahooCandles(symbol: string, interval: string, range: string): Pr
 interface IndexData {
   short: string;
   label: string;
+  unit: string; // "$" for stocks, "" for index points
   ok: boolean;
   error?: string;
   tableLines?: string[];
@@ -156,6 +163,7 @@ async function analyzeIndex(idx: (typeof INDEXES)[number]): Promise<IndexData> {
     return {
       short: idx.short,
       label: idx.label,
+      unit: idx.unit,
       ok: true,
       tableLines,
       latestClose: round2(latest),
@@ -167,6 +175,7 @@ async function analyzeIndex(idx: (typeof INDEXES)[number]): Promise<IndexData> {
     return {
       short: idx.short,
       label: idx.label,
+      unit: idx.unit,
       ok: false,
       error: err instanceof Error ? err.message : String(err),
     };
@@ -217,28 +226,31 @@ Deno.serve(async (req) => {
   let sentimentText = "";
   let leanText = "";
   if (okIndexes.length > 0) {
+    // Key-level values are pre-rendered strings so the display unit travels
+    // with the number: stocks carry a "$" prefix, the index is bare points.
+    // The model quotes them verbatim, so a stance can never mix the units up.
     const marketData = okIndexes.map((i) => ({
       index: i.short,
-      latest_close: i.latestClose,
+      latest_close: `${i.unit}${i.latestClose}`,
       week_change_pct: i.weekChangePct === undefined ? null : round2(i.weekChangePct),
       timeframe_reads: i.frameSummaries,
-      key_level_candidates: i.keyLevels,
+      key_level_candidates: i.keyLevels!.map((k) => ({ label: k.label, value: `${i.unit}${k.value}` })),
     }));
     const prompt = `Today is ${today}. You are writing prose sections of the Lil Bull Weekly Market Brief for the coming trading week. The indicator table is already built from computed data — you do not repeat it.
 
 MARKET_DATA (computed from real candles — the ONLY permitted source of any price or indicator number in your output):
 ${JSON.stringify(marketData, null, 2)}
 
-Use web_search for: this coming week's US market calendar (Fed speakers/FOMC, CPI/PPI/jobs data, major earnings) and 2-3 sentences of broad-market sentiment from recent news. NEVER state a price, level, or indicator value from the web — market numbers must come from MARKET_DATA only. Calendar dates/day-names from the web are fine.
+Use web_search for: this coming week's US market calendar (Fed speakers/FOMC, CPI/PPI/jobs data, major earnings — especially any SNDK or INTC earnings or guidance dates) and 2-3 sentences of broad-market sentiment from recent news. NEVER state a price, level, or indicator value from the web — market numbers must come from MARKET_DATA only. Calendar dates/day-names from the web are fine.
 
 Respond with EXACTLY one JSON object, no fences, no other text:
 {
-  "stances": [{"index": "SPX", "line": "SPX: Bullish|Bearish|Neutral - key level <value> (<label>)"}, ... one per index in MARKET_DATA],
+  "stances": [{"index": "S&P 500", "line": "S&P 500: Bullish|Bearish|Neutral - key level <value> (<label>)"}, ... one per index in MARKET_DATA],
   "calendar": ["<Mon-Fri item>", ... 3 or 4 items, each under 12 words],
   "sentiment": "<2-3 sentences, under 55 words total>",
   "lean": "Week lean: <Long|Short|Neutral> - <High|Medium|Low> conviction - <reason under 10 words>"
 }
-Rules: each stance's key level MUST be one of that index's key_level_candidates (quote its value and label verbatim); base stance and lean ONLY on the timeframe_reads given; no percentages in conviction; no invented numbers anywhere.`;
+Rules: each stance's key level MUST be one of that index's key_level_candidates (quote its value and label EXACTLY as given — stock values already carry their $ prefix, the S&P 500 is index points with no $); base stance and lean ONLY on the timeframe_reads given; no percentages in conviction; no invented numbers anywhere.`;
 
     const anthropic = new Anthropic({ apiKey });
     let messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: prompt }];

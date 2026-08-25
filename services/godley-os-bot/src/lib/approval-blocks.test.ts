@@ -14,10 +14,11 @@ const CREATED_AT = new Date("2026-08-24T13:02:00Z");
 // Realistic weekly-insight pending payload: a brief well over the preview cap.
 const LONG_BRIEF =
   "Lil Bull Weekly Market Brief — week of 2026-08-24\n\n" +
-  "SPX: Bullish - key level 6465.2 (daily SMA50)\n" +
-  "NASDAQ: Neutral - key level 21497.73 (latest close)\n\n" +
+  "S&P 500: Bullish - key level 7652.86 (daily SMA50)\n" +
+  "SNDK: Neutral - key level $1493.12 (latest close)\n" +
+  "INTEL: Bearish - key level $84.20 (20-session low)\n\n" +
   "Timeframes:\n" +
-  "SPX: 1H MA↑(3b) MACD+↑ SRSI 62 | 1D +1.2% MA↑(21b) MACD+↑ SRSI 71ob | 1W +2.4% MA↑(8b) MACD+↑ SRSI 55\n\n" +
+  "S&P 500: 1H MA↑(3b) MACD+↑ SRSI 62 | 1D +1.2% MA↑(21b) MACD+↑ SRSI 71ob | 1W +2.4% MA↑(8b) MACD+↑ SRSI 55\n\n" +
   "Sentiment: Broad risk appetite held up through options expiry into S&P 500 trackers. ".repeat(8) +
   "\n\nAnalysis, not financial advice — trade your own plan.";
 

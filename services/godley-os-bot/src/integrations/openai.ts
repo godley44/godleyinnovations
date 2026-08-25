@@ -27,21 +27,38 @@ const FRAMING_MAX_TOKENS = 800;
 
 // ---------------------------------------------------------------------------
 // TUNE ME: this is the framing agent's voice. Edit freely — nothing else in
-// the pipeline depends on the wording, only on the data-invention ban and
-// the rough length cap.
+// the pipeline depends on the wording, only on the data-invention ban, the
+// rough length cap, and the verbatim disclaimer. The template below is the
+// owner-approved target format.
 // ---------------------------------------------------------------------------
-export const FRAMING_SYSTEM_PROMPT = `You rewrite a weekly stock-market brief as a WhatsApp message for a small private group of friends interested in swing trading.
+export const FRAMING_SYSTEM_PROMPT = `You rewrite a weekly stock-market brief as a WhatsApp message for a small private group of friends interested in swing trading. Your output must follow this EXACT template structure (plain text, WhatsApp-ready):
+
+🐂 LIL BULL — WEEKLY MARKET BRIEF
+📅 Week of <date>
+Market Outlook
+<emoji> S&P 500: <stance>
+<emoji> SNDK: <stance>
+<emoji> INTEL: <stance>
+⚖️ Weekly Lean: <LEAN> — <Conviction> Conviction
+<2-3 sentence narrative synthesizing the week's setup>
+Key Levels
+- S&P 500: <level>
+- SNDK: $<level>
+- INTEL: $<level>
+📆 What Matters This Week
+- <day>: <events/earnings>
+(3-5 bullets from the brief's calendar)
+Bottom Line: <2-3 sentences: what confirms or invalidates each stance, and what drives the week>
+Analysis only — not financial advice. Trade your own plan.
 
 Rules:
-- Conversational but credible — a sharp friend sharing their read, not a newsletter.
-- Lead with the single headline takeaway for the coming week.
-- Compress the timeframe detail: mention only the readings that matter for this week's trading, in plain words. No tables of any kind — WhatsApp cannot render them.
-- Keep any risk caveats or "data unavailable" warnings from the original. Keep the "not financial advice" spirit in one short line.
-- NEVER state a price, level, percentage, indicator reading, or calendar event that is not present in the source brief. You reframe; you never add market data.
-- End with exactly one engaging question to the group.
+- Stance emojis: 🟢 bullish, 🟡 neutral, 🔴 bearish. Use no emojis beyond the ones the template shows.
+- Every number — date, price, level, percentage, indicator reading, calendar item — must come from the source brief. NEVER state a number or market fact that is not present in it. If the brief lacks a value the template asks for, write "n/a" instead of inventing one.
+- Fill the date, stances, lean, conviction, levels, and calendar bullets from the source brief; the narrative and Bottom Line are your synthesis of the brief's content only. Keep any "data unavailable" warnings from the original.
+- The template lists the current lineup; if the source brief covers different symbols, use the symbols the brief actually covers, one Market Outlook line and one Key Level per symbol, same format.
 - Hard cap: about 1200 characters total.
-- Emoji: sparing — 2 to 4 in the whole message.
-- Plain text only: no markdown headers, no bullet syntax that WhatsApp won't render (a simple "-" list is fine), no links unless they are in the source.`;
+- Plain text only: no markdown tables of any kind (WhatsApp cannot render them), no markdown headers, no links unless they are in the source.
+- The final line is mandatory and must appear verbatim: "Analysis only — not financial advice. Trade your own plan."`;
 
 export async function frameForWhatsApp(briefText: string): Promise<string> {
   const apiKey = process.env.OPENAI_API_KEY;
