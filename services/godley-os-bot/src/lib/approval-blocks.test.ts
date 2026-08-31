@@ -161,6 +161,31 @@ test("empty payload warns instead of rendering nothing, buttons still present", 
   assert.equal(buttons(blocks).length, 2, "reject must stay possible for broken payloads");
 });
 
+test("social.post preview shows the exact text in a code block plus its platform destinations", () => {
+  const { blocks } = buildApprovalPrompt({
+    proposalId: PROPOSAL_ID,
+    ventureName: "Lil Bull",
+    action: "social.post",
+    proposedBy: "admin",
+    createdAt: CREATED_AT,
+    payload: {
+      calendar_id: "cal-1",
+      text: "S&P setup: watching `7650` into the close.",
+      platforms: ["twitter", "linkedin"],
+    },
+  });
+  const preview = sectionTexts(blocks)[1] ?? "";
+  assert.ok(preview.startsWith("```\n"), "post text must render as a code block");
+  assert.ok(preview.includes("S&amp;P setup"), "post text must be mrkdwn-escaped");
+  assert.ok(preview.includes("'7650'"), "backticks inside the text must not break the fence");
+  const note = blocks.find((b) => b.type === "context");
+  assert.equal(
+    note?.type === "context" ? note.elements[0]?.text : "",
+    "This exact text publishes to X/Twitter, LinkedIn via Blotato after approval. Nothing publishes without it.",
+  );
+  assert.equal(buttons(blocks).length, 2, "the social.post prompt rides the same buttons contract");
+});
+
 test("decided message keeps venture, action, source, and time — and has no buttons", () => {
   const { text, blocks } = buildDecidedMessage({
     decision: "approve",

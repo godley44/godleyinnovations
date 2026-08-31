@@ -15,6 +15,7 @@
 //    buttons never stay live for an already-decided proposal.
 
 import { context, esc, formatUtc, section, type SlackBlock } from "./brief-blocks.js";
+import { platformLabel } from "./social-blocks.js";
 
 // Keep the preview phone-sized; the full payload lives in the OS.
 const PREVIEW_MAX = 600;
@@ -60,6 +61,10 @@ function fieldLine(label: string, value: unknown): string | null {
 // hard-limit guard; framed messages are ~1200 chars by construction.
 const WHATSAPP_PREVIEW_MAX = 1500;
 
+// Social posts are short by nature (a tweet caps at 280); the guard exists
+// only for Slack's hard block limit, same as the WhatsApp cap.
+const SOCIAL_PREVIEW_MAX = 1500;
+
 // Per-action payload previews. Field names mirror the os-ingest contract
 // (supabase/functions/os-ingest); anything unrecognized falls back to
 // compact field lines so a new action shows up readably instead of as JSON.
@@ -79,6 +84,23 @@ function previewBlocks(action: string, payload: Record<string, unknown>): SlackB
         full
           ? "This exact text is what gets handed over for WhatsApp after approval."
           : "Preview truncated — the full text gets handed over for WhatsApp after approval.",
+      ),
+    ];
+  }
+  if (action === "social.post" && typeof payload.text === "string" && payload.text.trim()) {
+    // The exact post body in a code block plus WHERE it goes — approval is
+    // the only path to publishing, so the owner must see both.
+    const full = payload.text.length <= SOCIAL_PREVIEW_MAX;
+    const fenced = esc(truncate(payload.text, SOCIAL_PREVIEW_MAX).replace(/`/g, "'"));
+    const platforms = Array.isArray(payload.platforms)
+      ? payload.platforms.filter((p): p is string => typeof p === "string").map(platformLabel)
+      : [];
+    const destinations = platforms.length > 0 ? platforms.join(", ") : "the venture's platform stack";
+    return [
+      section(`\`\`\`\n${fenced}\n\`\`\``),
+      context(
+        `${full ? "This exact text" : "Preview truncated — the full text"} publishes to ` +
+          `${esc(destinations)} via Blotato after approval. Nothing publishes without it.`,
       ),
     ];
   }

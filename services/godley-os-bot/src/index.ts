@@ -1,13 +1,15 @@
 // godley-os-bot: Slack bot backend for the Godley Innovations OS.
-// Hono app — four routes:
-//   GET  /health              → 200 "ok" (Render health check)
-//   POST /slack/events        → Events API (signature-verified); @mentions
-//                               answer with the health probe
-//   POST /slack/interactions  → interactivity: Approve/Reject buttons
-//                               (signature-verified)
-//   POST /admin/deliver-now   → run one report-delivery poll cycle now
-//                               (ADMIN_SECRET bearer auth)
-// Plus the report poller (src/lib/report-poller.ts) on a 60s interval.
+// Hono app — the routes:
+//   GET  /health                 → 200 "ok" (Render health check)
+//   POST /slack/events           → Events API (signature-verified);
+//                                  @mentions answer with the health probe
+//   POST /slack/interactions     → interactivity: Approve/Reject buttons
+//                                  (signature-verified)
+//   POST /admin/deliver-now      → run one poll cycle now
+//   POST /admin/social-draft     → file a social post for approval
+//   GET  /admin/blotato-accounts → list Blotato accounts (real key only)
+//                                  (all /admin: ADMIN_SECRET bearer auth)
+// Plus the poller (src/lib/report-poller.ts) on a 60s interval.
 
 import { existsSync } from "node:fs";
 import { serve } from "@hono/node-server";
