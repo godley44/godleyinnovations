@@ -60,20 +60,34 @@ function healthStatusText(): string {
   const failure =
     state.lastCheckOk === false ? ` Last check FAILED: ${state.lastCheckError ?? "unknown error"}.` : "";
   const lastFramed = state.lastFramedAt ? formatUtc(new Date(state.lastFramedAt)) : "none yet";
+  const lastPublish = state.lastPublishActivityAt ? formatUtc(new Date(state.lastPublishActivityAt)) : "none yet";
   const needsAttention = (s: string) =>
-    s === "failed" || s === "previously-failed" || s === "posting-stuck" || s === "already-disarmed" || s === "framing-stuck";
+    s === "failed" ||
+    s === "previously-failed" ||
+    s === "posting-stuck" ||
+    s === "already-disarmed" ||
+    s === "framing-stuck" ||
+    s === "publishing-stuck";
   const attention =
     state.lastDeliveries.filter((c) => needsAttention(c.status)).length +
     state.lastPrompts.filter((c) => needsAttention(c.status)).length +
-    state.lastFramings.filter((c) => needsAttention(c.status)).length;
+    state.lastFramings.filter((c) => needsAttention(c.status)).length +
+    state.lastPublishes.filter((c) => needsAttention(c.status)).length;
   const awaiting = state.lastPrompts.filter(
     (c) => c.status === "posted" || c.status === "already-posted",
+  ).length;
+  const waitingOnKey = state.lastPublishes.filter(
+    (c) => c.status === "dry-run" || c.status === "pending-real-key",
+  ).length;
+  const pendingConfirm = state.lastPublishes.filter(
+    (c) => c.status === "submitted" || c.status === "awaiting-confirmation",
   ).length;
   return (
     `godley-os-bot v${BOT_VERSION} · poller: ${poller} · last successful check: ${lastOk} · ` +
     `approvals awaiting decision in Slack: ${awaiting} · last buttons post: ${lastPrompt} · ` +
     `last report delivered: ${lastDelivered} · last WhatsApp framing: ${lastFramed} · ` +
-    `needs attention: ${attention}.${failure}`
+    `last publish activity: ${lastPublish} · publishes waiting on the real Blotato key: ${waitingOnKey} · ` +
+    `publishes pending confirmation: ${pendingConfirm} · needs attention: ${attention}.${failure}`
   );
 }
 

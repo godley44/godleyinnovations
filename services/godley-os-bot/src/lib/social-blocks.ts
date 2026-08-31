@@ -29,9 +29,13 @@ export interface PublishSummaryInput {
 const HEADER_MAX = 150;
 const TEXT_PREVIEW_MAX = 280;
 
-function label(platform: string): string {
+// Exported for the approval prompt, which names the platforms a social.post
+// will publish to.
+export function platformLabel(platform: string): string {
   return PLATFORM_LABELS[platform] ?? platform;
 }
+
+const label = platformLabel;
 
 function outcomeLine(o: PlatformOutcome): string {
   const name = esc(label(o.platform));

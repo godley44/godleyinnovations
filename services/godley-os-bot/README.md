@@ -12,7 +12,9 @@ The research/framing/publishing pipelines are stubs on purpose.
 | `GET /health` | Returns `200 ok` — Render health check. |
 | `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge and acks everything within Slack's 3-second window. An `@mention` of the bot is the **health probe**: it replies in-thread (after the ack, fire-and-forget) with the bot version, poller status, timestamps of the last successful delivery check and last delivered report, and how many reports need attention (failed or stuck deliveries). |
 | `POST /slack/interactions` | Slack interactivity. Approve/Reject buttons write the decision to Supabase, then replace the original message ("✅ Approved by Justin" / "❌ Rejected by Justin"). A failed write is reported in-channel and nothing is retried silently. |
-| `POST /admin/deliver-now` | Runs one report-delivery poll cycle immediately (with full Slack channel resolution) and returns the result as JSON — for testing delivery without waiting on the Monday cron. Auth: `Authorization: Bearer <ADMIN_SECRET>`; with the secret unset the route refuses everything. |
+| `POST /admin/deliver-now` | Runs one full poll cycle immediately (delivery, framing, prompts, disarm, publish, confirm — with full Slack channel resolution) and returns the result as JSON — for testing without waiting on the Monday cron. Auth: `Authorization: Bearer <ADMIN_SECRET>`; with the secret unset all admin routes refuse everything. |
+| `POST /admin/social-draft` | Files a social post: creates the `content_calendar` row and its `social.post` proposal, which rides the existing approval rails (Slack buttons / app inbox). Drafting never publishes — only approval does. Body: `{ "ventureSlug", "text", "platforms": ["twitter","linkedin"], "mediaUrls"?, "scheduledFor"? }` (`scheduledFor` is informational only this phase). Same bearer auth. |
+| `GET /admin/blotato-accounts` | Lists the Blotato accounts behind the real API key (`GET /v2/users/me/accounts`), for assigning `venture_platforms.blotato_account_id` at live-test time. Refuses with a clear message while the key is the `pending` placeholder. Same bearer auth. |
 
 Both Slack routes verify the request signature by hand (no Slack SDK): HMAC
 SHA-256 over `v0:<timestamp>:<raw body>` with the signing secret, timing-safe
@@ -111,19 +113,41 @@ Blotato's side: a publish answers with a `postSubmissionId` and the real
 outcome (`published` + public URL, or terminal `failed` — their docs say
 "do not retry on failed") comes from the status endpoint.
 
-**Dry run**: with no real key (the Render env ships the placeholder
-`pending` — generating a real key starts Blotato billing) or
-`BLOTATO_DRY_RUN=1`, `publishPost()` logs the exact request it would send
-and returns an explicit dry-run result, so the whole approval→publish
-chain is testable before the key exists. Per-platform rules are enforced
-at request-build time (YouTube requires a video mediaUrl plus
-title/privacy flags; text-only posts can target X/Twitter and LinkedIn).
+The full chain (migration 007): `POST /admin/social-draft` creates a
+`content_calendar` row and files a `social.post` proposal — buttons in the
+venture channel, approve/reject, disarm, zero new approval code. Approving
+runs `apply_proposal()`, which flips the calendar row `proposed→approved`
+in the same transaction; **the approval gate is the ONLY path to
+publishing** (`scheduled_for` is stored but informational — nothing
+auto-publishes on a schedule this phase). The poller's publish step then
+claims each (post, platform) pair in the **`social_publishes` ledger**
+(`publishing` → `submitted` → `published`/`failed`, or `dry-run`;
+`unique(calendar_id, platform)`) before calling Blotato — one platform
+failing never blocks the others, failures are terminal with the reason
+recorded (delete the row to re-arm that platform), and a confirm pass
+polls submitted publishes until Blotato reports the outcome. The venture
+channel gets a one-line-per-platform summary (partial failures show the
+successes alongside), and `content_calendar.status` aggregates to
+`published`/`partial`/`failed`.
 
-**Current status: the Blotato client, per-platform request builders, the
-publish-summary rendering, and their tests ship now; the content calendar,
-venture platform stacks, the `social.post` proposal action, and the
-poller's publish step are awaiting the owner's approval of migration 007.**
-Schema is never invented here — same stop as 004/005/006.
+Platform stacks live in **`venture_platforms`** — the publish step resolves
+Blotato account ids only through that table for the post's venture, so
+posts can never cross ventures. The rows ship with
+`blotato_account_id NULL`: the ids are born when the real key is generated
+(which starts billing), fetched via `GET /admin/blotato-accounts`, and
+assigned by hand in the SQL editor. Publishing refuses loudly per-platform
+while an id is NULL.
+
+**Dry run is load-bearing**: with no real key (the Render env ships the
+placeholder `pending`) or `BLOTATO_DRY_RUN=1`, `publishPost()` logs the
+exact request it would send and the ledger records `dry-run` — the whole
+draft→approve→publish chain runs end-to-end before the key exists, and the
+calendar row deliberately stays `publishing` (never claims "published" for
+a message that was not sent). When the real key lands: assign the account
+ids, delete the dry-run ledger rows, and the next cycle publishes for
+real. Per-platform rules are enforced at request-build time (YouTube
+requires a video plus per-post title, so it is refused until the video
+phase; text posts target X/Twitter and LinkedIn).
 
 Framing is tracked in **`framing_jobs`** (migration 006, which also adds
 `whatsapp.message` to the proposals action whitelist and teaches

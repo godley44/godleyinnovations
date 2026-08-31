@@ -67,6 +67,45 @@ begin
   end if;
 end $$;
 
+-- social.post: approval flips the matching calendar row proposed→approved in
+-- the same transaction.
+insert into content_calendar (venture_id, body, platforms, status)
+  select id, 'pipeline test post', array['twitter','linkedin'], 'proposed'
+  from ventures where slug = 'test-venture';
+insert into proposals (venture_id, action, payload, proposed_by)
+  select c.venture_id, 'social.post',
+         jsonb_build_object('calendar_id', c.id, 'text', c.body, 'platforms', c.platforms),
+         'admin'
+  from content_calendar c where c.body = 'pipeline test post';
+select apply_proposal(id) from proposals where status = 'pending';
+do $$
+declare st text;
+begin
+  select status into st from content_calendar where body = 'pipeline test post';
+  if st <> 'approved' then
+    raise exception 'social.post approval did not flip the calendar row (got %)', st;
+  end if;
+end $$;
+
+-- A social.post pointing at no proposed calendar row must fail the approval
+-- loudly — a half-wired draft can never approve into nothing.
+do $$
+declare pid uuid;
+begin
+  insert into proposals (venture_id, action, payload, proposed_by)
+    select id, 'social.post', jsonb_build_object('calendar_id', gen_random_uuid()), 'admin'
+    from ventures where slug = 'test-venture'
+    returning id into pid;
+  begin
+    perform apply_proposal(pid);
+    raise exception 'social.post with a missing calendar row was NOT blocked';
+  exception when others then
+    if sqlerrm not like '%no matching proposed calendar row%' then raise; end if;
+  end;
+  -- Clean up so the stray pending proposal can't confuse later checks.
+  delete from proposals where id = pid;
+end $$;
+
 -- RLS: any other signed-in email sees nothing and writes nothing.
 reset role;
 select set_config('request.jwt.claims', '{"email":"stranger@example.com"}', false);
@@ -87,4 +126,4 @@ begin
 end $$;
 
 reset role;
-select 'pipeline_test OK: apply, double-apply block, note append, RLS isolation all verified' as result;
+select 'pipeline_test OK: apply, double-apply block, note append, social.post flip + guard, RLS isolation all verified' as result;
