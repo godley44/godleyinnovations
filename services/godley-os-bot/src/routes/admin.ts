@@ -26,10 +26,9 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
-import { isDryRun, listAccounts } from "../integrations/blotato.js";
-import { runPollCycle, tableErrorMessage } from "../lib/report-poller.js";
-import { socialProposalRow, validateSocialDraft, type VenturePlatformRow } from "../lib/social-draft.js";
-import { getSupabase } from "../lib/supabase.js";
+import { listAccounts } from "../integrations/blotato.js";
+import { fileSocialDraft } from "../lib/file-social-draft.js";
+import { runPollCycle } from "../lib/report-poller.js";
 
 // Hash both sides so the comparison is timing-safe without leaking length.
 function secretsEqual(a: string, b: string): boolean {
@@ -91,129 +90,13 @@ adminRoutes.post("/social-draft", async (c) => {
     return c.json({ ok: false, error: 'ventureSlug is required, e.g. "lil-bull"' }, 400);
   }
 
-  const supabase = getSupabase();
-  const { data: venture, error: ventureError } = await supabase
-    .from("ventures")
-    .select("id, name, slug")
-    .eq("slug", ventureSlug)
-    .maybeSingle();
-  if (ventureError) {
-    return c.json({ ok: false, error: `ventures query failed: ${ventureError.message}` }, 500);
+  // The draft logic lives in src/lib/file-social-draft.ts — shared verbatim
+  // with the AI Manager's create_social_draft action.
+  const result = await fileSocialDraft(ventureSlug, body);
+  if (!result.ok) {
+    return c.json({ ok: false, error: result.error }, result.status as 400 | 404 | 500);
   }
-  if (!venture) {
-    return c.json({ ok: false, error: `no venture with slug "${ventureSlug}"` }, 404);
-  }
-  const ventureId = (venture as { id: string }).id;
-
-  const { data: stackData, error: stackError } = await supabase
-    .from("venture_platforms")
-    .select("platform, blotato_account_id, blotato_page_id, youtube_privacy, enabled")
-    .eq("venture_id", ventureId);
-  if (stackError) {
-    return c.json(
-      { ok: false, error: tableErrorMessage(stackError.message, stackError.code, "venture_platforms", "007_social_publishing.sql") },
-      500,
-    );
-  }
-  const stack = (stackData ?? []).flatMap((raw): VenturePlatformRow[] => {
-    const d = raw as Record<string, unknown>;
-    return typeof d.platform === "string"
-      ? [
-          {
-            platform: d.platform,
-            blotato_account_id: typeof d.blotato_account_id === "string" ? d.blotato_account_id : null,
-            blotato_page_id: typeof d.blotato_page_id === "string" ? d.blotato_page_id : null,
-            youtube_privacy: typeof d.youtube_privacy === "string" ? d.youtube_privacy : null,
-            enabled: d.enabled === true,
-          },
-        ]
-      : [];
-  });
-
-  const validated = validateSocialDraft(body, stack);
-  if (!validated.ok) {
-    return c.json({ ok: false, error: validated.error }, 400);
-  }
-  const draft = validated.draft;
-
-  const { data: calRow, error: calError } = await supabase
-    .from("content_calendar")
-    .insert({
-      venture_id: ventureId,
-      body: draft.text,
-      media_urls: draft.mediaUrls,
-      platforms: draft.platforms,
-      scheduled_for: draft.scheduledFor,
-      status: "draft",
-    })
-    .select("id")
-    .single();
-  if (calError || !calRow) {
-    return c.json(
-      {
-        ok: false,
-        error: tableErrorMessage(
-          calError?.message ?? "no row returned",
-          calError?.code,
-          "content_calendar",
-          "007_social_publishing.sql",
-        ),
-      },
-      500,
-    );
-  }
-  const calendarId = (calRow as { id: string }).id;
-
-  const { data: propRow, error: propError } = await supabase
-    .from("proposals")
-    .insert(socialProposalRow({ ventureId, calendarId, text: draft.text, platforms: draft.platforms }))
-    .select("id")
-    .single();
-  if (propError || !propRow) {
-    const hint = /proposals_action_check/.test(propError?.message ?? "")
-      ? " — run supabase/migrations/007_social_publishing.sql (the action whitelist part)"
-      : "";
-    return c.json(
-      {
-        ok: false,
-        error:
-          `filing the social.post proposal failed: ${propError?.message ?? "no row returned"}${hint}. ` +
-          `The calendar row ${calendarId} stays 'draft' (harmless) — retry after fixing the cause.`,
-      },
-      500,
-    );
-  }
-  const proposalId = (propRow as { id: string }).id;
-
-  const { error: wireError } = await supabase
-    .from("content_calendar")
-    .update({ status: "proposed", proposal_id: proposalId, updated_at: new Date().toISOString() })
-    .eq("id", calendarId)
-    .eq("status", "draft");
-  if (wireError) {
-    return c.json(
-      {
-        ok: false,
-        error:
-          `proposal ${proposalId} was filed but wiring it to calendar row ${calendarId} failed: ${wireError.message}. ` +
-          "Approving now would raise ('no matching proposed calendar row') — reject the proposal, then retry the draft.",
-      },
-      500,
-    );
-  }
-
-  return c.json({
-    ok: true,
-    calendarId,
-    proposalId,
-    venture: ventureSlug,
-    platforms: draft.platforms,
-    scheduledFor: draft.scheduledFor,
-    dryRun: isDryRun(),
-    next:
-      "approve it via the Slack buttons or the app inbox — the poller publishes within a cycle of approval" +
-      (isDryRun() ? " (dry-run mode: the exact requests are logged, nothing reaches Blotato)" : ""),
-  });
+  return c.json(result);
 });
 
 adminRoutes.get("/blotato-accounts", async (c) => {
