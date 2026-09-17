@@ -4,7 +4,9 @@
 // Approve/Reject buttons land here. IMPORTANT MAPPING: what the product calls
 // "approvals" is the public.proposals table (migration 002) — the same rows
 // the app's Approvals inbox shows. There is no separate "approvals" relation,
-// and approving is NOT a bare status update:
+// and approving is NOT a bare status update. The decision write itself lives
+// in src/lib/decisions.ts (recordDecision), SHARED with the AI Manager so
+// every surface runs the identical code path:
 //
 //   approve → rpc apply_proposal(p_id): performs the proposed write (ledger
 //             row / ticket / note), flips status to 'approved' and sets
@@ -26,12 +28,9 @@
 
 import { Hono } from "hono";
 import { buildDecidedMessage } from "../lib/approval-blocks.js";
+import { DECIDER_NAME, markPromptDisarmed, recordDecision, type Decision } from "../lib/decisions.js";
 import { slackVerify, type SlackVerifiedEnv } from "../lib/slack-verify.js";
 import { getSupabase } from "../lib/supabase.js";
-
-// Single-operator system — the only human who can click these buttons is the
-// owner (see is_owner() in migration 001).
-const DECIDER_NAME = "Justin";
 
 interface BlockAction {
   action_id?: string;
@@ -44,8 +43,6 @@ interface InteractionPayload {
   actions?: BlockAction[];
 }
 
-type Decision = "approve" | "reject";
-
 async function respond(responseUrl: string, body: object): Promise<void> {
   const res = await fetch(responseUrl, {
     method: "POST",
@@ -53,25 +50,6 @@ async function respond(responseUrl: string, body: object): Promise<void> {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Slack response_url returned ${res.status}`);
-}
-
-async function recordDecision(decision: Decision, proposalId: string): Promise<void> {
-  const supabase = getSupabase();
-  if (decision === "approve") {
-    const { error } = await supabase.rpc("apply_proposal", { p_id: proposalId });
-    if (error) throw new Error(error.message);
-    return;
-  }
-  const { data, error } = await supabase
-    .from("proposals")
-    .update({ status: "rejected", decided_at: new Date().toISOString() })
-    .eq("id", proposalId)
-    .eq("status", "pending")
-    .select("id");
-  if (error) throw new Error(error.message);
-  if (!data || data.length === 0) {
-    throw new Error("proposal not found or already decided");
-  }
 }
 
 // The replacement message must still say WHAT was decided (venture, proposal
@@ -113,26 +91,6 @@ async function decidedReplacement(decision: Decision, proposalId: string): Promi
   }
 }
 
-// After a decision through THESE buttons, mark the prompt's ledger row
-// disarmed so the poller's disarm pass doesn't re-render the message (it
-// would drop the "by Justin" attribution). 'posting' is included: a tap
-// proves the message exists, healing a row stuck by a crash-before-record.
-// Failure here is only logged — the poller repairs un-marked prompts on its
-// next cycle, so the acknowledgement must not be blocked by it.
-async function disarmOwnPrompt(proposalId: string): Promise<void> {
-  const { error } = await getSupabase()
-    .from("slack_prompts")
-    .update({ status: "disarmed", disarmed_at: new Date().toISOString() })
-    .eq("proposal_id", proposalId)
-    .in("status", ["posted", "posting"]);
-  if (error) {
-    console.error(
-      `[interactions] could not mark prompt ${proposalId} disarmed (${error.message}) — ` +
-        "the poller's disarm pass will repair it",
-    );
-  }
-}
-
 async function handleDecision(
   decision: Decision,
   proposalId: string,
@@ -153,7 +111,11 @@ async function handleDecision(
     return;
   }
   await respond(responseUrl, await decidedReplacement(decision, proposalId));
-  await disarmOwnPrompt(proposalId);
+  // After a decision through THESE buttons the response_url already
+  // re-rendered the message, so only the ledger row needs the flip —
+  // otherwise the poller's disarm pass would re-render it and drop the
+  // "by Justin" attribution.
+  await markPromptDisarmed(proposalId);
 }
 
 export const slackInteractions = new Hono<SlackVerifiedEnv>();
