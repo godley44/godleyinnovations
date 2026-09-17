@@ -1,0 +1,187 @@
+# deploy-on-main: the production deploy pipeline. Runs on every push to main
+# (i.e. every squash-merged PR) and does the three things that used to be done
+# by hand:
+#
+#   1. applies new Supabase migrations — `supabase db push`, in filename order,
+#      one transaction per file, stops on the first error (verified: a failing
+#      file leaves no history row and none of its statements applied);
+#   2. deploys the edge functions whose source changed in this push (all of
+#      them when supabase/config.toml changed, since that file carries each
+#      function's verify_jwt setting);
+#   3. posts a one-line summary to #studio-admin through the bot's
+#      POST /admin/notify — on success AND on failure.
+#
+# The bot itself is deployed by Render (it watches services/godley-os-bot) and
+# the app by Vercel; this workflow only reports on those.
+#
+# Migrations never run for PR branches: the trigger below is `push` to main
+# only, and scripts/check-approval-gate.mjs asserts that stays true.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_ACCESS_TOKEN  Supabase account access token (functions deploy)
+#   SUPABASE_DB_URL        Session-pooler connection string incl. password
+#   BOT_URL                the bot's Render URL, e.g. https://godley-os-bot.onrender.com
+#   BOT_ADMIN_SECRET       the bot's ADMIN_SECRET (same value as on Render)
+# The first two are required; without the last two the deploy still runs and
+# the summary step only warns that it could not post.
+
+name: deploy-on-main
+
+on:
+  push:
+    branches: [main]
+  # Re-run by hand from the Actions tab (e.g. right after adding a secret).
+  workflow_dispatch:
+
+# Two merges in a row deploy one after the other, never interleaved.
+concurrency:
+  group: deploy-on-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_REF: jvsrlcfkotvmvyxiniid
+  # Pinned to the version this workflow was verified against.
+  SUPABASE_CLI_VERSION: 2.117.0
+  # Migrations applied BY HAND in production before this pipeline existed.
+  # They are recorded in the remote history table without being run (see the
+  # baseline step). Append nothing here: every later migration is applied
+  # by `db push` and records itself.
+  BASELINE_MIGRATIONS: "001 002 003 004 005 006 007"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the change detection diffs against the previous
+          # main head.
+          fetch-depth: 0
+
+      - name: Check the required secrets are present
+        id: secrets
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          missing=()
+          [ -n "$SUPABASE_ACCESS_TOKEN" ] || missing+=(SUPABASE_ACCESS_TOKEN)
+          [ -n "$SUPABASE_DB_URL" ] || missing+=(SUPABASE_DB_URL)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing repo secret(s): ${missing[*]} — add them under Settings → Secrets and variables → Actions, then re-run this workflow."
+            exit 1
+          fi
+          echo "secrets present"
+
+      - name: Work out what this push changed
+        id: changes
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          before="$BEFORE_SHA"
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            # workflow_dispatch, or a history the runner can't see: compare to the parent.
+            before="$(git rev-parse HEAD~1)"
+          fi
+          echo "Comparing $before..HEAD"
+          changed="$(git diff --name-only "$before" HEAD)"
+          printf '%s\n' "$changed"
+
+          added_migrations="$(printf '%s\n' "$changed" | { grep -E '^supabase/migrations/[0-9]+_.*\.sql$' || true; } \
+            | sed 's#.*/##' | sort | tr '\n' ' ')"
+
+          if printf '%s\n' "$changed" | grep -qx 'supabase/config.toml'; then
+            functions="$(ls supabase/functions | tr '\n' ' ')"
+          else
+            functions="$(printf '%s\n' "$changed" | { grep -oE '^supabase/functions/[^/]+/' || true; } \
+              | sed 's#^supabase/functions/##; s#/$##' | sort -u | tr '\n' ' ')"
+          fi
+          # Function names become CLI arguments — refuse anything but slugs.
+          for fn in $functions; do
+            if ! printf '%s' "$fn" | grep -qE '^[a-z0-9-]+$'; then
+              echo "::error::Function directory name '$fn' is not a plain slug — refusing to deploy it."
+              exit 1
+            fi
+          done
+
+          bot_changed=false
+          if printf '%s\n' "$changed" | grep -q '^services/godley-os-bot/'; then bot_changed=true; fi
+
+          {
+            echo "added_migrations=$added_migrations"
+            echo "functions=$functions"
+            echo "bot_changed=$bot_changed"
+          } >> "$GITHUB_OUTPUT"
+          echo "new migration files in this push: ${added_migrations:-none}"
+          echo "functions to deploy: ${functions:-none}"
+          echo "bot changed: $bot_changed"
+
+      - name: Install the Supabase CLI
+        id: cli
+        uses: supabase/setup-cli@v3
+        with:
+          version: ${{ env.SUPABASE_CLI_VERSION }}
+
+      - name: Baseline the migration history (idempotent)
+        id: baseline
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        # `migration repair --status applied` is an upsert into
+        # supabase_migrations.schema_migrations (ON CONFLICT DO UPDATE in the
+        # CLI source): it records the hand-applied versions WITHOUT running
+        # them, and re-running it every deploy is a no-op. Without this the
+        # first `db push` would try to re-create every table.
+        run: supabase migration repair --db-url "$SUPABASE_DB_URL" --status applied $BASELINE_MIGRATIONS
+
+      - name: Apply new migrations
+        id: migrate
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        # Applies every local migration not yet in the remote history, in
+        # filename order; a failure inside a file rolls that file back and
+        # stops the whole workflow (non-zero exit). Nothing pending → "Remote
+        # database is up to date." and exit 0.
+        run: |
+          supabase db push --db-url "$SUPABASE_DB_URL" --yes 2>&1 | tee push.log
+          applied="$(grep -oE 'Applying migration [^ ]+\.sql' push.log | sed 's/^Applying migration //' | tr '\n' ' ' || true)"
+          echo "applied=$applied" >> "$GITHUB_OUTPUT"
+          echo "migrations applied this run: ${applied:-none}"
+
+      - name: Deploy changed edge functions
+        id: functions
+        if: steps.changes.outputs.functions != ''
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          FUNCTIONS: ${{ steps.changes.outputs.functions }}
+        # verify_jwt per function comes from supabase/config.toml (all three
+        # existing functions gate on a shared secret, so it is off for them).
+        # --use-api bundles server-side: no Docker on the runner.
+        run: |
+          for fn in $FUNCTIONS; do
+            echo "== deploying $fn"
+            supabase functions deploy "$fn" --project-ref "$PROJECT_REF" --use-api
+          done
+
+      - name: Post the deploy summary to #studio-admin
+        if: always()
+        env:
+          BOT_URL: ${{ secrets.BOT_URL }}
+          BOT_ADMIN_SECRET: ${{ secrets.BOT_ADMIN_SECRET }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          ADDED_MIGRATIONS: ${{ steps.changes.outputs.added_migrations }}
+          APPLIED_MIGRATIONS: ${{ steps.migrate.outputs.applied }}
+          FUNCTIONS_PLANNED: ${{ steps.changes.outputs.functions }}
+          BOT_CHANGED: ${{ steps.changes.outputs.bot_changed }}
+          OUTCOME_SECRETS: ${{ steps.secrets.outcome }}
+          OUTCOME_CHANGES: ${{ steps.changes.outcome }}
+          OUTCOME_CLI: ${{ steps.cli.outcome }}
+          OUTCOME_BASELINE: ${{ steps.baseline.outcome }}
+          OUTCOME_MIGRATE: ${{ steps.migrate.outcome }}
+          OUTCOME_FUNCTIONS: ${{ steps.functions.outcome }}
+        run: node scripts/deploy-notify.mjs

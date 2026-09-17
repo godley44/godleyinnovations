@@ -4,3 +4,5 @@ dist/
 .env.*
 *.local
 .DS_Store
+# Supabase CLI scratch state (written by `supabase db push` etc.)
+supabase/.temp/

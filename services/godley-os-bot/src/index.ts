@@ -8,6 +8,7 @@
 //   POST /admin/deliver-now      → run one poll cycle now
 //   POST /admin/social-draft     → file a social post for approval
 //   GET  /admin/blotato-accounts → list Blotato accounts (real key only)
+//   POST /admin/notify           → post one line to #studio-admin (deploys)
 //                                  (all /admin: ADMIN_SECRET bearer auth)
 // Plus the poller (src/lib/report-poller.ts) on a 60s interval.
 
