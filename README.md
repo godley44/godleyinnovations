@@ -21,9 +21,12 @@ browser, missing tables degrade to a plain-English message instead of a crash.
 ## Stack
 
 - React + Vite (frontend, `src/`)
-- Supabase (Postgres + auth; schema in `supabase/migrations/`, run by hand)
+- Supabase (Postgres + auth; schema in `supabase/migrations/`, applied to
+  production by `deploy-on-main.yml` after every merge)
 - Vercel (deploys from `main`)
-- GitHub Actions (`.github/workflows/ci.yml` runs checks on every push)
+- GitHub Actions (`.github/workflows/ci.yml` runs checks on every push;
+  `.github/workflows/deploy-on-main.yml` applies migrations, deploys edge
+  functions, and reports to #studio-admin after every merge to `main`)
 
 ## One-time setup (you do these; they need your accounts)
 
@@ -44,13 +47,29 @@ browser, missing tables degrade to a plain-English message instead of a crash.
 3. Open the deployed URL, sign in with the owner email, enter the 6-digit
    code from your inbox.
 
-## Running migrations later
+## Migrations and deploys are automatic
 
-New features sometimes ship before their tables exist (deploys are automatic,
-migrations are manual). The app will say exactly which migration to run —
-open `supabase/migrations/`, find the lowest-numbered file you haven't run,
-run it in the Supabase SQL editor, repeat. Run them in order; each file is
-run once, ever.
+Every merge to `main` runs `.github/workflows/deploy-on-main.yml`:
+
+1. `supabase db push` applies any migration file not yet in the production
+   history table, in filename order, one transaction per file. A failing
+   file is rolled back and the workflow stops red — nothing after it runs.
+   Migrations 001–007 were applied by hand before this existed; the workflow
+   records them as applied (idempotently) without re-running them.
+2. Edge functions whose source changed in the merge are deployed
+   (`supabase functions deploy`, JWT settings from `supabase/config.toml`).
+3. One line goes to **#studio-admin** via the bot: what merged, migrations
+   applied, functions deployed, bot version — or a loud failure with the log
+   link.
+
+The Vercel app and the Render bot deploy themselves from `main` as before.
+If the app ever says a table is missing, check the latest `deploy-on-main`
+run in the Actions tab — it will say which step failed and why.
+
+Rules for a new migration: next number in sequence, idempotent (`if not
+exists`, `create or replace`), never edit or rename a file once it has been
+merged (the history table tracks it by version and refuses to continue if a
+recorded file disappears).
 
 ## Development
 
@@ -72,8 +91,8 @@ guard script so it can't happen twice.
 - `src/modules/config.ts` — the single source of truth for every tab: which
   table it reads, which fields it shows, which "lens" it applies. Most new
   features start here.
-- `supabase/migrations/` — numbered SQL files, run by hand, never edited
-  after being run.
+- `supabase/migrations/` — numbered SQL files, applied to production by
+  `deploy-on-main.yml`, never edited after being merged.
 - `src/lib/dbErrors.ts` — turns database errors into plain instructions.
 - `scripts/` — the guard scripts behind `npm run check`.
 - `services/ai-mesh-bot/` — Slack bot routing @mentions to AI personas; see

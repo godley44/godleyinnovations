@@ -1,0 +1,30 @@
+# Supabase CLI project config — read by `supabase db push` and
+# `supabase functions deploy` in .github/workflows/deploy-on-main.yml.
+# Nothing here is a secret: the project ref is already public in the
+# function URLs in README.md; the database URL and access token live only in
+# GitHub repo secrets (SUPABASE_DB_URL, SUPABASE_ACCESS_TOKEN).
+#
+# Only the keys the deploy pipeline needs are set; every other section keeps
+# the CLI default. Local `supabase start` is not part of this repo's workflow.
+project_id = "jvsrlcfkotvmvyxiniid"
+
+# Per-function gateway JWT verification. All three functions authenticate
+# their callers with a shared secret (`Authorization: Bearer <secret>`, checked
+# first thing in each handler), not a Supabase user JWT — so the gateway's
+# JWT check must be OFF or every legitimate caller would be refused with 401
+# before the function runs:
+#   os-ingest      — called by the AI Mesh Bot with OS_WEBHOOK_SECRET
+#                    (the function header documents --no-verify-jwt).
+#   claude-bridge  — called by the AI Mesh Bot router with BRIDGE_SHARED_SECRET.
+#   weekly-insight — called by pg_cron/pg_net (migration 003) with
+#                    WEEKLY_JOB_SECRET from Vault.
+# A new function that IS called with a Supabase user JWT should simply not be
+# listed here (the default is verify_jwt = true).
+[functions.os-ingest]
+verify_jwt = false
+
+[functions.claude-bridge]
+verify_jwt = false
+
+[functions.weekly-insight]
+verify_jwt = false

@@ -48,10 +48,24 @@ jobs:
       # glob keeps the runner off dist/index.js, which starts the server.
       - run: node --test "dist/**/*.test.js"
 
-  # The migrations are applied by hand in production, so CI is the only place
-  # the SQL executes before the real database. Applies every migration in
-  # order to a real Postgres 16, then runs the behavioral pipeline test
-  # (apply_proposal, double-apply block, RLS isolation).
+  # The approval gate is a property of the code, not the compiler: this job
+  # fails any PR that adds a way to publish, send, or change external state
+  # without going through apply_proposal or the shared decision code paths.
+  # Grep-based; every rule is documented in the script.
+  approval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-approval-gate.mjs
+
+  # Migrations reach production through deploy-on-main.yml (supabase db push
+  # after a merge), so CI is the only place the SQL executes before the real
+  # database. Applies every migration in order to a real Postgres 16, then
+  # runs the behavioral pipeline test (apply_proposal, double-apply block,
+  # RLS isolation).
   sql-tests:
     runs-on: ubuntu-latest
     services:

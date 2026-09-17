@@ -17,6 +17,12 @@
 //                                   live-test time. Read-only; refuses with
 //                                   a clear message while the key is the
 //                                   placeholder.
+//   POST /admin/notify            — post one line to #studio-admin (the
+//                                   owner's console). Called by the
+//                                   deploy-on-main workflow with the deploy
+//                                   outcome. Slack is the workroom, not an
+//                                   external platform, so this is not gated;
+//                                   it never touches the database.
 //
 // Auth on every route: Authorization: Bearer <ADMIN_SECRET>. Fail closed —
 // with the secret unset every request is refused, so a fresh deploy can
@@ -28,8 +34,14 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { isDryRun, listAccounts } from "../integrations/blotato.js";
 import { runPollCycle, tableErrorMessage } from "../lib/report-poller.js";
+import { listChannelsByName, postMessage } from "../lib/slack-web.js";
 import { socialProposalRow, validateSocialDraft, type VenturePlatformRow } from "../lib/social-draft.js";
 import { getSupabase } from "../lib/supabase.js";
+
+// The owner's console channel. Not a venture (no ventures row), so it is
+// named here rather than resolved through venture-map.
+export const STUDIO_ADMIN_CHANNEL = "studio-admin";
+const NOTIFY_MAX_CHARS = 4000;
 
 // Hash both sides so the comparison is timing-safe without leaking length.
 function secretsEqual(a: string, b: string): boolean {
@@ -214,6 +226,47 @@ adminRoutes.post("/social-draft", async (c) => {
       "approve it via the Slack buttons or the app inbox — the poller publishes within a cycle of approval" +
       (isDryRun() ? " (dry-run mode: the exact requests are logged, nothing reaches Blotato)" : ""),
   });
+});
+
+adminRoutes.post("/notify", async (c) => {
+  const denied = requireAdmin(c);
+  if (denied) return denied;
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "body must be JSON" }, 400);
+  }
+  const fields = (body ?? {}) as Record<string, unknown>;
+  const text = typeof fields.text === "string" ? fields.text.trim() : "";
+  if (!text) return c.json({ ok: false, error: "text is required" }, 400);
+  if (text.length > NOTIFY_MAX_CHARS) {
+    return c.json({ ok: false, error: `text is longer than ${NOTIFY_MAX_CHARS} characters` }, 400);
+  }
+  const level = fields.level === undefined || fields.level === "info" ? "info" : fields.level === "error" ? "error" : null;
+  if (level === null) return c.json({ ok: false, error: 'level must be "info" or "error"' }, 400);
+
+  let channels: Awaited<ReturnType<typeof listChannelsByName>>;
+  try {
+    channels = await listChannelsByName();
+  } catch (err) {
+    return c.json({ ok: false, error: `Slack channel lookup failed: ${err instanceof Error ? err.message : String(err)}` }, 502);
+  }
+  const channel = channels.get(STUDIO_ADMIN_CHANNEL);
+  if (!channel) {
+    return c.json({ ok: false, error: `no public channel named #${STUDIO_ADMIN_CHANNEL} — create it and invite the bot` }, 502);
+  }
+  if (!channel.isMember) {
+    return c.json({ ok: false, error: `the bot is not a member of #${STUDIO_ADMIN_CHANNEL} — run /invite @<bot> there` }, 502);
+  }
+
+  try {
+    const ts = await postMessage({ channel: channel.id, text: `${level === "error" ? "🚨" : "🚀"} ${text}` });
+    return c.json({ ok: true, channel: channel.name, ts });
+  } catch (err) {
+    return c.json({ ok: false, error: `Slack refused the post: ${err instanceof Error ? err.message : String(err)}` }, 502);
+  }
 });
 
 adminRoutes.get("/blotato-accounts", async (c) => {
