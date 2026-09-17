@@ -26,10 +26,63 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
+// One row of the real pending list, as resolvePendingReference needs it.
+export interface PendingRef {
+  id: string;
+  venture: string;
+  action: string;
+}
+
+// The model sometimes passes a made-up handle ("pending-lil-bull-note")
+// instead of the uuid. Resolve it against the ACTUAL pending list rather
+// than refusing: unambiguous (one pending proposal, or a unique uuid
+// prefix) → that proposal; ambiguous or empty → a problem that names the
+// real candidates. Safe because the resolved id still goes through the
+// same status check below and the owner confirms a summary built from the
+// resolved row — never from the model's text.
+export function resolvePendingReference(ref: string, pending: PendingRef[]): { ok: true; id: string } | { ok: false; problem: string } {
+  if (UUID_RE.test(ref)) return { ok: true, id: ref };
+  const label = `"${ref || "(empty)"}" is not a proposal id`;
+  if (pending.length === 0) {
+    return { ok: false, problem: `${label} and no proposal is pending — there is nothing to decide` };
+  }
+  if (pending.length === 1) return { ok: true, id: pending[0]!.id };
+  const prefix = ref.toLowerCase();
+  const prefixMatches = prefix === "" ? [] : pending.filter((p) => p.id.toLowerCase().startsWith(prefix));
+  if (prefixMatches.length === 1) return { ok: true, id: prefixMatches[0]!.id };
+  const listing = pending.map((p) => `${p.id} (${p.venture} · ${p.action})`).join("; ");
+  return { ok: false, problem: `${label} and ${pending.length} proposals are pending — say which one: ${listing}` };
+}
+
+// Fetches the pending list and maps the reference onto it (see
+// resolvePendingReference). Only called for a non-uuid reference.
+async function resolveAgainstPendingList(ref: string): Promise<{ ok: true; id: string } | { ok: false; problem: string }> {
+  const { data, error } = await getSupabase()
+    .from("proposals")
+    .select("id, action, venture:ventures(name)")
+    .eq("status", "pending")
+    .order("created_at", { ascending: true })
+    .limit(25);
+  if (error) return { ok: false, problem: `could not load the pending list to resolve "${ref}": ${error.message}` };
+  const pending: PendingRef[] = (data ?? []).map((raw) => {
+    const d = raw as Record<string, unknown>;
+    const ventureRaw = Array.isArray(d.venture) ? d.venture[0] : d.venture;
+    const venture = (ventureRaw as { name?: unknown } | null)?.name;
+    return {
+      id: String(d.id),
+      venture: typeof venture === "string" ? venture : "(unknown venture)",
+      action: String(d.action),
+    };
+  });
+  return resolvePendingReference(ref, pending);
+}
+
 async function describeDecision(tool: "approve_proposal" | "reject_proposal", input: Record<string, unknown>): Promise<ActDescription> {
-  const id = typeof input.proposal_id === "string" ? input.proposal_id.trim() : "";
+  let id = typeof input.proposal_id === "string" ? input.proposal_id.trim() : "";
   if (!UUID_RE.test(id)) {
-    return { ok: false, problem: `"${id || "(empty)"}" is not a proposal id — I need the exact uuid from the pending list` };
+    const resolved = await resolveAgainstPendingList(id);
+    if (!resolved.ok) return resolved;
+    id = resolved.id;
   }
   const { data, error } = await getSupabase()
     .from("proposals")
