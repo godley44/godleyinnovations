@@ -86,7 +86,12 @@ export const MANAGER_TOOLS: AnthropicTool[] = [
     input_schema: {
       type: "object",
       properties: {
-        proposal_id: { type: "string", description: "The pending proposal's uuid, from a tool result in this conversation." },
+        proposal_id: {
+          type: "string",
+          description:
+            "The pending proposal's uuid, from a tool result in this conversation. Never invent a " +
+            "placeholder — if you do not have the uuid, call list_pending_proposals first.",
+        },
       },
       required: ["proposal_id"],
       additionalProperties: false,
@@ -100,7 +105,12 @@ export const MANAGER_TOOLS: AnthropicTool[] = [
     input_schema: {
       type: "object",
       properties: {
-        proposal_id: { type: "string", description: "The pending proposal's uuid, from a tool result in this conversation." },
+        proposal_id: {
+          type: "string",
+          description:
+            "The pending proposal's uuid, from a tool result in this conversation. Never invent a " +
+            "placeholder — if you do not have the uuid, call list_pending_proposals first.",
+        },
       },
       required: ["proposal_id"],
       additionalProperties: false,
