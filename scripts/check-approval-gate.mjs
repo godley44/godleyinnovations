@@ -22,9 +22,13 @@
 //      set by apply_proposal() alone.
 //   4. Nobody flips a proposal to 'approved' except the database function:
 //      no `status: "approved"` literal in any TS/TSX; `.rpc(` is only ever
-//      `apply_proposal`, and only from the two human decision paths (the app's
-//      ApprovalsCard and the Slack interactions route); `.update(` on
-//      `proposals` only in those two files (reject is a decision too).
+//      `apply_proposal`, and only from the decision paths — the app's
+//      ApprovalsCard and the bot's lib/decisions.ts (THE shared decision
+//      module, reached from the Slack buttons and from the AI Manager only
+//      after the owner's explicit "yes"); `.update(` on `proposals` only in
+//      those files (reject is a decision too). recordDecision() itself may be
+//      called from exactly two places: the interactions route and
+//      manager-acts.ts (the confirmation gate's execute half).
 //   5. Edge functions never write OS tables directly: the only mutation is an
 //      `.insert(` into `proposals` (os-ingest); no `.rpc(` at all.
 //   6. In SQL, every `status = 'approved'` lives inside an apply_proposal()
@@ -107,6 +111,7 @@ const DEPLOY_WORKFLOW = ".github/workflows/deploy-on-main.yml";
 const FETCH_ALLOWLIST = new Set([
   `${BOT_SRC}/integrations/blotato.ts`, // publishing — gated by rule 3
   `${BOT_SRC}/integrations/openai.ts`, // framing — output becomes a NEW pending proposal
+  `${BOT_SRC}/integrations/anthropic.ts`, // AI Manager model calls — its acts run only through decisions.ts after a "yes"
   `${BOT_SRC}/lib/slack-web.ts`, // Slack is the workroom, not an external platform
   `${BOT_SRC}/routes/slack-interactions.ts`, // response_url acknowledgement of a decision
 ]);
@@ -143,7 +148,13 @@ for (const rel of walk(BOT_SRC, [".ts"])) {
 }
 
 // --- 4. approval happens only in apply_proposal ------------------------------
-const DECISION_FILES = new Set([`${APP_SRC}/components/ApprovalsCard.tsx`, `${BOT_SRC}/routes/slack-interactions.ts`]);
+const DECISION_FILES = new Set([
+  `${APP_SRC}/components/ApprovalsCard.tsx`,
+  `${BOT_SRC}/lib/decisions.ts`,
+  `${BOT_SRC}/routes/slack-interactions.ts`,
+]);
+// The only two places allowed to invoke the shared decision function.
+const RECORD_DECISION_CALLERS = new Set([`${BOT_SRC}/routes/slack-interactions.ts`, `${BOT_SRC}/lib/manager-acts.ts`]);
 for (const rel of [...walk(APP_SRC, [".ts", ".tsx"]), ...walk(BOT_SRC, [".ts"]), ...walk(FUNCTIONS, [".ts"])]) {
   if (isTest(rel)) continue;
   const text = readCode(rel);
@@ -159,6 +170,9 @@ for (const rel of [...walk(APP_SRC, [".ts", ".tsx"]), ...walk(BOT_SRC, [".ts"]),
     if (/\.(update|upsert|delete)\(/.test(chain) && !DECISION_FILES.has(rel)) {
       fail(`${rel} mutates proposals outside the decision paths — file a new proposal instead`);
     }
+  }
+  if (rel !== `${BOT_SRC}/lib/decisions.ts` && /\brecordDecision\(/.test(text) && !RECORD_DECISION_CALLERS.has(rel)) {
+    fail(`${rel} calls recordDecision() — only ${[...RECORD_DECISION_CALLERS].join(" and ")} may (buttons, or the manager after the owner's "yes")`);
   }
 }
 

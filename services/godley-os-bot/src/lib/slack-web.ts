@@ -79,6 +79,76 @@ export async function listChannelsByName(): Promise<Map<string, SlackChannel>> {
   return byName;
 }
 
+// Channel id → name (conversations.info), cached per id: the events route
+// resolves every incoming event's channel to decide studio-admin vs venture
+// routing, and names effectively never change mid-session. A lookup failure
+// returns null (the caller falls back to venture-channel behavior) — it
+// never throws, because routing must not break event handling.
+const CHANNEL_NAME_TTL_MS = 15 * 60 * 1000;
+const channelNameCache = new Map<string, { at: number; name: string }>();
+
+export async function getChannelName(channelId: string): Promise<string | null> {
+  const cached = channelNameCache.get(channelId);
+  if (cached && Date.now() - cached.at < CHANNEL_NAME_TTL_MS) return cached.name;
+  try {
+    const res = await slackApi("conversations.info", { channel: channelId });
+    const name = (res.channel as { name?: unknown } | undefined)?.name;
+    if (typeof name !== "string") return null;
+    channelNameCache.set(channelId, { at: Date.now(), name });
+    return name;
+  } catch (err) {
+    console.error(
+      `[slack] conversations.info failed for ${channelId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
+export interface HistoryMessage {
+  ts: string;
+  userId?: string;
+  botId?: string;
+  subtype?: string;
+  text: string;
+}
+
+function normalizeHistoryMessage(raw: unknown): HistoryMessage | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const m = raw as Record<string, unknown>;
+  if (typeof m.ts !== "string") return null;
+  return {
+    ts: m.ts,
+    userId: typeof m.user === "string" ? m.user : undefined,
+    botId: typeof m.bot_id === "string" ? m.bot_id : undefined,
+    subtype: typeof m.subtype === "string" ? m.subtype : undefined,
+    text: typeof m.text === "string" ? m.text : "",
+  };
+}
+
+// Recent conversation context for the AI Manager, oldest-first: the thread's
+// replies when threadTs is given (conversations.replies), else the
+// channel's main scroll (conversations.history — thread replies don't
+// appear there, matching what the owner sees). Needs the channels:history
+// scope, which the message.channels event subscription already requires.
+export async function fetchRecentMessages(args: {
+  channel: string;
+  threadTs?: string;
+  limit: number;
+}): Promise<HistoryMessage[]> {
+  // conversations.history pages NEWEST-first (limit N = the N most recent),
+  // but conversations.replies pages OLDEST-first — a small limit there
+  // would return a long thread's start, not its tail. So replies fetch a
+  // big page and the tail is taken after sorting.
+  const res = args.threadTs
+    ? await slackApi("conversations.replies", { channel: args.channel, ts: args.threadTs, limit: 200 })
+    : await slackApi("conversations.history", { channel: args.channel, limit: args.limit });
+  const messages = (Array.isArray(res.messages) ? res.messages : [])
+    .map(normalizeHistoryMessage)
+    .filter((m): m is HistoryMessage => m !== null)
+    .sort((a, b) => Number(a.ts) - Number(b.ts));
+  return messages.slice(-args.limit);
+}
+
 export interface PostMessageArgs {
   channel: string;
   text: string; // notification fallback when blocks are present

@@ -2,15 +2,22 @@
 //
 // Slack retries any event not acked within 3 seconds, so the handler does
 // nothing slow: verify (middleware), dedupe, log, ack. Real processing runs
-// fire-and-forget AFTER the 200 via processEvent(); when the research/framing
-// pipeline is built it plugs in there, never before the ack.
+// fire-and-forget AFTER the 200 via processEvent() — including the AI
+// Manager's model calls, which take seconds — never before the ack.
+//
+// Routing (src/lib/manager-routing.ts):
+//   #studio-admin, human message   → the AI Manager (src/lib/manager.ts)
+//   any other channel, @mention    → the health probe (unchanged)
+//   everything else                → logged only (unchanged)
 
 import { Hono } from "hono";
+import { buildHealthText } from "../lib/health-text.js";
+import { handleManagerMessage } from "../lib/manager.js";
+import { classifyEvent } from "../lib/manager-routing.js";
+import { getManagerStats } from "../lib/manager-state.js";
 import { getPollerState } from "../lib/report-poller.js";
-import { formatUtc } from "../lib/brief-blocks.js";
-import { postMessage } from "../lib/slack-web.js";
+import { getChannelName, postMessage } from "../lib/slack-web.js";
 import { slackVerify, type SlackVerifiedEnv } from "../lib/slack-verify.js";
-import { BOT_VERSION } from "../lib/version.js";
 
 interface SlackEvent {
   type: string;
@@ -31,9 +38,11 @@ interface SlackEventsBody {
   event?: SlackEvent;
 }
 
-// Slack retries events it thinks failed; without dedupe a slow pipeline later
-// would run twice. In-memory is acceptable (same trade-off as ai-mesh-bot): a
-// restart can at worst double-handle one in-flight event, never loop.
+// Slack retries events it thinks failed; without dedupe a slow pipeline
+// would run twice — with the manager live, that would mean double replies
+// (and double confirmation prompts). In-memory is acceptable (same
+// trade-off as ai-mesh-bot): a restart can at worst double-handle one
+// in-flight event, never loop.
 const seenEvents = new Map<string, number>();
 const SEEN_TTL_MS = 10 * 60 * 1000;
 
@@ -48,64 +57,44 @@ function alreadySeen(eventId: string | undefined): boolean {
   return false;
 }
 
-// An @mention is the health probe: answer in-thread with version, poller
-// status, and the last delivery check, so the bot can be checked from a
-// phone without opening Render logs.
-function healthStatusText(): string {
-  const state = getPollerState();
-  const poller = state.intervalRunning ? "running" : "NOT RUNNING";
-  const lastOk = state.lastSuccessAt ? formatUtc(new Date(state.lastSuccessAt)) : "never";
-  const lastDelivered = state.lastDeliveredAt ? formatUtc(new Date(state.lastDeliveredAt)) : "none yet";
-  const lastPrompt = state.lastPromptPostedAt ? formatUtc(new Date(state.lastPromptPostedAt)) : "none yet";
-  const failure =
-    state.lastCheckOk === false ? ` Last check FAILED: ${state.lastCheckError ?? "unknown error"}.` : "";
-  const lastFramed = state.lastFramedAt ? formatUtc(new Date(state.lastFramedAt)) : "none yet";
-  const lastPublish = state.lastPublishActivityAt ? formatUtc(new Date(state.lastPublishActivityAt)) : "none yet";
-  const needsAttention = (s: string) =>
-    s === "failed" ||
-    s === "previously-failed" ||
-    s === "posting-stuck" ||
-    s === "already-disarmed" ||
-    s === "framing-stuck" ||
-    s === "publishing-stuck";
-  const attention =
-    state.lastDeliveries.filter((c) => needsAttention(c.status)).length +
-    state.lastPrompts.filter((c) => needsAttention(c.status)).length +
-    state.lastFramings.filter((c) => needsAttention(c.status)).length +
-    state.lastPublishes.filter((c) => needsAttention(c.status)).length;
-  const awaiting = state.lastPrompts.filter(
-    (c) => c.status === "posted" || c.status === "already-posted",
-  ).length;
-  const waitingOnKey = state.lastPublishes.filter(
-    (c) => c.status === "dry-run" || c.status === "pending-real-key",
-  ).length;
-  const pendingConfirm = state.lastPublishes.filter(
-    (c) => c.status === "submitted" || c.status === "awaiting-confirmation",
-  ).length;
-  return (
-    `godley-os-bot v${BOT_VERSION} · poller: ${poller} · last successful check: ${lastOk} · ` +
-    `approvals awaiting decision in Slack: ${awaiting} · last buttons post: ${lastPrompt} · ` +
-    `last report delivered: ${lastDelivered} · last WhatsApp framing: ${lastFramed} · ` +
-    `last publish activity: ${lastPublish} · publishes waiting on the real Blotato key: ${waitingOnKey} · ` +
-    `publishes pending confirmation: ${pendingConfirm} · needs attention: ${attention}.${failure}`
-  );
-}
-
-// Pipeline hook. Everything here happens after Slack already got its 200, so
-// it may become as slow as it likes (Anthropic/OpenAI calls, Supabase writes).
+// Everything here happens after Slack already got its 200, so it may become
+// as slow as it likes (Anthropic calls, Supabase reads, Slack posts).
 async function processEvent(event: SlackEvent): Promise<void> {
   console.log(
     `[events] ${event.type}${event.subtype ? `/${event.subtype}` : ""} ` +
       `channel=${event.channel ?? "?"} user=${event.user ?? "?"} ` +
       `text=${JSON.stringify(event.text ?? "")}`,
   );
-  if (event.type === "app_mention" && event.channel && event.ts) {
+
+  const channelName = event.channel ? await getChannelName(event.channel) : null;
+  const route = classifyEvent({
+    type: event.type,
+    channelName,
+    botId: event.bot_id,
+    subtype: event.subtype,
+  });
+
+  if (route === "manager" && event.channel && event.user && event.ts) {
+    await handleManagerMessage({
+      channel: event.channel,
+      user: event.user,
+      text: event.text ?? "",
+      ts: event.ts,
+      threadTs: event.thread_ts,
+    });
+    return;
+  }
+
+  // An @mention is the health probe: answer in-thread with version, poller
+  // status, the last delivery check, and manager stats, so the bot can be
+  // checked from a phone without opening Render logs.
+  if (route === "probe" && event.channel && event.ts) {
     await postMessage({
       channel: event.channel,
       // Replying in the mention's thread (or starting one on it) keeps the
       // probe out of the channel's main scroll.
       threadTs: event.thread_ts ?? event.ts,
-      text: healthStatusText(),
+      text: buildHealthText(getPollerState(), getManagerStats()),
     });
   }
 }
@@ -134,8 +123,9 @@ slackEvents.post("/", slackVerify, (c) => {
     const isMention = event.type === "app_mention";
     const isChannelMessage = event.type === "message" && event.channel_type === "channel";
     // Never react to bot-authored messages or edit/system subtypes — the
-    // loop-breaker (bots replying to bots) inherited from ai-mesh-bot. This
-    // must survive when real processing replaces the log line.
+    // loop-breaker (bots replying to bots) inherited from ai-mesh-bot. The
+    // manager's own replies come back as bot messages, so this is what
+    // keeps it from talking to itself; classifyEvent checks it again.
     const isHuman = !event.bot_id && !event.subtype;
     if ((isMention || isChannelMessage) && isHuman) {
       // Fire-and-forget: the 200 below goes out now, processing runs after.

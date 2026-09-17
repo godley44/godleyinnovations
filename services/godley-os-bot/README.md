@@ -10,7 +10,7 @@ The research/framing/publishing pipelines are stubs on purpose.
 | Route | What it does |
 | --- | --- |
 | `GET /health` | Returns `200 ok` — Render health check. |
-| `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge and acks everything within Slack's 3-second window. An `@mention` of the bot is the **health probe**: it replies in-thread (after the ack, fire-and-forget) with the bot version, poller status, timestamps of the last successful delivery check and last delivered report, and how many reports need attention (failed or stuck deliveries). |
+| `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge and acks everything within Slack's 3-second window. In **#studio-admin**, every human message routes to the **AI Manager** (see below). Anywhere else an `@mention` of the bot is the **health probe**: it replies in-thread (after the ack, fire-and-forget) with the bot version, poller status, timestamps of the last successful delivery check and last delivered report, how many reports need attention, and manager stats. |
 | `POST /slack/interactions` | Slack interactivity. Approve/Reject buttons write the decision to Supabase, then replace the original message ("✅ Approved by Justin" / "❌ Rejected by Justin"). A failed write is reported in-channel and nothing is retried silently. |
 | `POST /admin/deliver-now` | Runs one full poll cycle immediately (delivery, framing, prompts, disarm, publish, confirm — with full Slack channel resolution) and returns the result as JSON — for testing without waiting on the Monday cron. Auth: `Authorization: Bearer <ADMIN_SECRET>`; with the secret unset all admin routes refuse everything. |
 | `POST /admin/social-draft` | Files a social post: creates the `content_calendar` row and its `social.post` proposal, which rides the existing approval rails (Slack buttons / app inbox). Drafting never publishes — only approval does. Body: `{ "ventureSlug", "text", "platforms": ["twitter","linkedin"], "mediaUrls"?, "scheduledFor"? }` (`scheduledFor` is informational only this phase). Same bearer auth. |
@@ -188,6 +188,58 @@ disarmed so the pass doesn't overwrite the "by Justin" attribution. If the
 bot deploys before migration 005 has been run, report delivery keeps
 working and the prompt steps fail loudly with "run migration 005".
 
+## The AI Manager (#studio-admin)
+
+The conversational, cross-venture operator (`src/lib/manager.ts`). The
+architecture rule: venture channels (#lil-bull, …) are the agents'
+workrooms; **#studio-admin is the owner's office** — STUDIO scope, reads
+across every venture, and is a third decision surface behind the SAME
+approval gate as the buttons and the app inbox (never a replacement for
+them).
+
+Every **human** message in a channel named exactly `studio-admin` routes to
+the manager (`src/lib/manager-routing.ts`; bot messages and edit subtypes
+are loop-guarded out). The event is acked within Slack's 3 seconds; the
+model call runs after. Replies land **in-channel** for unthreaded messages
+(a flat scroll keeps ask → confirm → result visible in one glance on a
+phone; thread replies hide behind a tap) and in-thread when the owner
+started a thread. If a reply takes more than ~5s, a "🤔 Working on it…"
+placeholder posts first and is edited into the final answer via
+`chat.update`.
+
+The model (`src/integrations/anthropic.ts`, plain fetch, `claude-haiku-4-5`
+— a single constant; upgrade to `claude-sonnet-5`/`claude-opus-5` there if
+multi-step asks start misfiring) gets the last ~15 messages of the
+conversation plus tools:
+
+- **READ tools** (run immediately): `list_pending_proposals`,
+  `get_proposal`, `recent_activity`, `venture_overview`, `health`.
+- **ACT tools** (NEVER run off a model response): `approve_proposal`,
+  `reject_proposal`, `create_social_draft` (files a draft that still needs
+  approval — the mildest act).
+
+**Confirm-before-act is enforced in code**, not prompt: an ACT tool call is
+parked as an in-memory pending action (`src/lib/pending-actions.ts`,
+10-minute TTL, one per conversation — a new one supersedes and announces
+the old; expiry is announced, never silent) and the manager replies with a
+code-built restatement of exactly what will happen. Only an **exact**
+affirmative (`yes`/`y`/`confirm`/`approve it`/… — strict whitelist in
+`src/lib/affirmative.ts`; "yes but…" goes back to the model) from the
+**owner** (`OWNER_SLACK_USER_ID`; unset = actions disabled, fail closed)
+executes it — through the same code paths as the buttons:
+`apply_proposal` RPC for approve, the pending-guarded update for reject,
+`fileSocialDraft` for drafts (`src/lib/decisions.ts`,
+`src/lib/file-social-draft.ts`, shared with the routes — zero new approval
+logic). A manager approval also retires the corresponding buttons message
+(the PR #5 disarm logic) and shows up in the app inbox via the shared
+tables. Pending actions deliberately do NOT survive a restart: losing one
+fails closed (a later "yes" finds nothing and says so) — no new table, no
+migration.
+
+The @mention health probe (any venture channel) now includes manager stats:
+messages handled, pending confirmations, last model call latency. Model
+latency and token usage are logged per call; the API key never is.
+
 ## The 3-second rule
 
 Slack retries anything not acked within 3 seconds, so every route returns
@@ -203,7 +255,8 @@ All documented with placeholders in [`.env.example`](.env.example) — copy to
 
 `PORT` (Render injects it), `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`,
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_SECRET`,
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `BLOTATO_API_KEY`.
+`ANTHROPIC_API_KEY`, `OWNER_SLACK_USER_ID` (the AI Manager's owner gate —
+Slack profile → "…" → Copy member ID), `OPENAI_API_KEY`, `BLOTATO_API_KEY`.
 
 ## Local development
 
@@ -233,8 +286,9 @@ The service deploys from this monorepo, not a separate repo:
    (always-on; the free tier sleeps and would miss Slack's 3-second window).
 4. Add the environment variables in the Render dashboard (Environment tab):
    `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `SUPABASE_URL`,
-   `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-   `BLOTATO_API_KEY`. (`PORT` is injected by Render automatically.)
+   `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `OWNER_SLACK_USER_ID`,
+   `OPENAI_API_KEY`, `BLOTATO_API_KEY`. (`PORT` is injected by Render
+   automatically.)
 5. Deploy. When the health check at `/health` is green, point the Slack app
    at it (below).
 
@@ -254,3 +308,9 @@ its own repo.
    `https://<service>.onrender.com/slack/interactions`.
 3. Install the app to the workspace; put the signing secret and bot token in
    Render's environment.
+
+No new OAuth scopes for the AI Manager: `channels:history` (required by the
+`message.channels` subscription) also covers `conversations.history` /
+`conversations.replies` (conversation context), and `channels:read`
+(already used for `conversations.list`) covers `conversations.info`
+(channel-name routing).
