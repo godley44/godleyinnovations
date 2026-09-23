@@ -66,6 +66,13 @@ The Vercel app and the Render bot deploy themselves from `main` as before.
 If the app ever says a table is missing, check the latest `deploy-on-main`
 run in the Actions tab — it will say which step failed and why.
 
+Every secret the pipeline, the bot, and the edge functions use lives in the
+**Doppler vault** (project `godley-os`, config `prd`): the workflow fetches
+them with the one repo secret `DOPPLER_TOKEN`, Render is synced by Doppler's
+integration, and the edge functions' secrets are written from the vault on
+every deploy. Names, consumers, and the rotation procedure are in
+[`docs/secrets.md`](docs/secrets.md).
+
 Rules for a new migration: next number in sequence, idempotent (`if not
 exists`, `create or replace`), never edit or rename a file once it has been
 merged (the history table tracks it by version and refuses to continue if a

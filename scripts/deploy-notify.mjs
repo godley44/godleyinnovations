@@ -6,7 +6,8 @@
 //
 // Two deliberate behaviors:
 //   - BOT_URL / BOT_ADMIN_SECRET unset → the deploy itself is unaffected; the
-//     step prints a warning and exits 0. Posting needs those two secrets and
+//     step prints a warning and exits 0. Posting needs those two values (from
+//     the Doppler vault: BOT_URL and ADMIN_SECRET — see docs/secrets.md) and
 //     adding them is the owner's job, not a reason to fail a deploy.
 //   - Both set but the POST fails → exit 1, so a deploy whose summary never
 //     reached the owner shows red instead of silently looking fine.
@@ -43,11 +44,13 @@ function list(value) {
 }
 
 const steps = [
+  ["vault", env.OUTCOME_VAULT],
   ["secrets", env.OUTCOME_SECRETS],
   ["change detection", env.OUTCOME_CHANGES],
   ["CLI install", env.OUTCOME_CLI],
   ["migration baseline", env.OUTCOME_BASELINE],
   ["migrations", env.OUTCOME_MIGRATE],
+  ["function secrets", env.OUTCOME_FN_SECRETS],
   ["edge functions", env.OUTCOME_FUNCTIONS],
 ];
 const failedStep = steps.find(([, outcome]) => outcome === "failure")?.[0] ?? null;
@@ -62,6 +65,25 @@ const functions = list(env.FUNCTIONS_PLANNED);
 const version = botVersion();
 const botNote = env.BOT_CHANGED === "true" ? `bot v${version} (Render is redeploying it)` : `bot v${version} (unchanged)`;
 
+// Where this run's secrets came from — the owner's end-to-end check that the
+// vault path works: "secrets: Doppler" with nothing still from GitHub means
+// the legacy GitHub secrets are unused. Names only, never values.
+const fallback = list(env.SECRETS_FALLBACK);
+const secretsNote =
+  env.SECRETS_SOURCE === "doppler"
+    ? fallback.length > 0
+      ? `secrets: Doppler (still from GitHub: ${fallback.join(", ")})`
+      : "secrets: Doppler"
+    : "secrets: GitHub (DOPPLER_TOKEN not set)";
+const fnSynced = list(env.FUNCTION_SECRETS_SYNCED);
+const fnMissing = list(env.FUNCTION_SECRETS_MISSING);
+const fnSecretsNote =
+  env.SECRETS_SOURCE !== "doppler"
+    ? null
+    : fnSynced.length > 0
+      ? `function secrets from the vault: ${fnSynced.join(", ")}${fnMissing.length > 0 ? ` (not in the vault yet: ${fnMissing.join(", ")})` : ""}`
+      : "function secrets: none in the vault yet";
+
 let text;
 if (ok) {
   const migrationsNote =
@@ -71,11 +93,13 @@ if (ok) {
         ? `migrations: ${added.join(", ")} already applied`
         : "migrations: none";
   const functionsNote = functions.length > 0 ? `functions deployed: ${functions.join(", ")}` : "functions: none";
-  text = `Deployed ${merged} · ${migrationsNote} · ${functionsNote} · ${botNote}`;
+  text = [`Deployed ${merged}`, migrationsNote, fnSecretsNote, functionsNote, botNote, secretsNote]
+    .filter((part) => part !== null)
+    .join(" · ");
 } else {
   const where = failedStep ?? "an unknown step";
   const partial = applied.length > 0 ? ` Migrations that did apply before the failure: ${applied.join(", ")}.` : "";
-  text = `DEPLOY FAILED for ${merged} at step "${where}".${partial} Nothing after that step ran. Logs: ${env.RUN_URL ?? "(no run url)"}`;
+  text = `DEPLOY FAILED for ${merged} at step "${where}".${partial} Nothing after that step ran. ${secretsNote}. Logs: ${env.RUN_URL ?? "(no run url)"}`;
 }
 
 console.log(text);
@@ -84,7 +108,7 @@ const botUrl = (env.BOT_URL ?? "").trim().replace(/\/+$/, "");
 const secret = env.BOT_ADMIN_SECRET ?? "";
 if (!botUrl || !secret) {
   console.log(
-    "::warning::Could not post to #studio-admin: repo secrets BOT_URL and/or BOT_ADMIN_SECRET are not set. The deploy result above stands.",
+    "::warning::Could not post to #studio-admin: BOT_URL and/or ADMIN_SECRET are not in the vault (nor the legacy BOT_URL / BOT_ADMIN_SECRET repo secrets). The deploy result above stands.",
   );
   process.exit(0);
 }
