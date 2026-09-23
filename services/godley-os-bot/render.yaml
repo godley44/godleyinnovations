@@ -39,3 +39,9 @@ services:
         sync: false
       - key: BLOTATO_API_KEY
         sync: false
+      # One AI account: both model clients call OpenRouter with this key by
+      # default; ANTHROPIC_API_KEY / OPENAI_API_KEY above are the
+      # direct-provider fallback behind AI_PROVIDER=direct (unset = OpenRouter
+      # when this key is present).
+      - key: OPENROUTER_API_KEY
+        sync: false

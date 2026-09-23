@@ -34,11 +34,11 @@ Supabase by hand any more:
 | `SUPABASE_URL` | ✓ | | (injected by Supabase) | was in Render |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✓ | | (injected by Supabase) | was in Render |
 | `ADMIN_SECRET` | ✓ | ✓ (posts the deploy summary) | | was in Render (GitHub held a copy as `BOT_ADMIN_SECRET`) |
-| `ANTHROPIC_API_KEY` | ✓ (direct-provider fallback) | | ✓ `claude-bridge`, `weekly-insight` | was in Render and hand-set on Supabase |
+| `ANTHROPIC_API_KEY` | ✓ (direct-provider path only, `AI_PROVIDER=direct`) | | ✓ `claude-bridge`, `weekly-insight` (always direct) | was in Render and hand-set on Supabase |
 | `OWNER_SLACK_USER_ID` | ✓ | | | was in Render |
-| `OPENAI_API_KEY` | ✓ (direct-provider fallback) | | | was in Render |
+| `OPENAI_API_KEY` | ✓ (direct-provider path only, `AI_PROVIDER=direct`) | | | was in Render |
 | `BLOTATO_API_KEY` | ✓ | | | was in Render (`pending` = dry run) |
-| `OPENROUTER_API_KEY` | ✓ | | | new — the bot's AI calls go through OpenRouter |
+| `OPENROUTER_API_KEY` | ✓ | | | new — the bot's AI calls go through OpenRouter (openrouter.ai → Keys; prepaid credits) |
 | `SUPABASE_ACCESS_TOKEN` | | ✓ | | was a GitHub secret (write-only there — regenerate at supabase.com → Account → Access Tokens when moving it) |
 | `SUPABASE_DB_URL` | | ✓ | | was a GitHub secret (Supabase → Connect → Session pooler string, with the DB password) |
 | `BOT_URL` | | ✓ | | was a GitHub secret; not secret — the bot's Render URL |

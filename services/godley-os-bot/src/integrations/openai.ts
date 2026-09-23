@@ -1,5 +1,7 @@
-// The WhatsApp framing agent: one call to the OpenAI chat-completions API
-// that rewrites an approved weekly market brief as a WhatsApp-ready message.
+// The WhatsApp framing agent: one chat completion (GPT-4o mini) that
+// rewrites an approved weekly market brief as a WhatsApp-ready message —
+// through OpenRouter by default (one AI account for the whole bot, see
+// openrouter.ts) or the OpenAI API directly behind AI_PROVIDER=direct.
 // Plain fetch — no OpenAI SDK, same policy as every other HTTP integration
 // in this service.
 //
@@ -15,10 +17,14 @@
 //  - The API key must never appear in logs: errors carry the HTTP status
 //    and OpenAI's error message only, never request headers.
 
+import { chatCompletion, resolveAiProvider } from "./openrouter.js";
+
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 
-// Cheap and more than sufficient for reframing; change here to upgrade.
+// Cheap and more than sufficient for reframing; change here to upgrade —
+// once per provider (the two names must stay the same model).
 export const FRAMING_MODEL = "gpt-4o-mini";
+export const FRAMING_MODEL_OPENROUTER = "openai/gpt-4o-mini";
 
 const FRAMING_TIMEOUT_MS = 60_000;
 // ~1200 chars requested of the model; tokens capped with headroom so a
@@ -61,6 +67,29 @@ Rules:
 - The final line is mandatory and must appear verbatim: "Analysis only — not financial advice. Trade your own plan."`;
 
 export async function frameForWhatsApp(briefText: string): Promise<string> {
+  return resolveAiProvider() === "direct" ? frameDirect(briefText) : frameViaOpenRouter(briefText);
+}
+
+// OpenRouter path (default): same two messages, the OpenRouter slug.
+async function frameViaOpenRouter(briefText: string): Promise<string> {
+  const reply = await chatCompletion({
+    model: FRAMING_MODEL_OPENROUTER,
+    messages: [
+      { role: "system", content: FRAMING_SYSTEM_PROMPT },
+      { role: "user", content: briefText },
+    ],
+    maxTokens: FRAMING_MAX_TOKENS,
+    timeoutMs: FRAMING_TIMEOUT_MS,
+    label: "framing",
+  });
+  if (!reply.content || !reply.content.trim()) {
+    throw new Error("OpenRouter returned an empty completion");
+  }
+  return reply.content.trim();
+}
+
+// Direct path (AI_PROVIDER=direct): the OpenAI chat-completions API as before.
+async function frameDirect(briefText: string): Promise<string> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
 

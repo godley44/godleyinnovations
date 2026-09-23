@@ -88,7 +88,8 @@ same policy as signature verification.
 ## WhatsApp framing agent (phase 1 of the social backbone)
 
 When a weekly brief is APPROVED, the framing agent
-(`src/integrations/openai.ts`, plain fetch, `gpt-4o-mini`) rewrites it as a
+(`src/integrations/openai.ts`, plain fetch, GPT-4o mini — `openai/gpt-4o-mini`
+through OpenRouter by default, see "One AI account" below) rewrites it as a
 WhatsApp-ready message — conversational, headline first, ~1200 chars, no
 tables, 2-4 emoji, one closing question, and **barred from stating any
 market data not present in the source brief** (the system prompt is a
@@ -207,8 +208,9 @@ started a thread. If a reply takes more than ~5s, a "🤔 Working on it…"
 placeholder posts first and is edited into the final answer via
 `chat.update`.
 
-The model (`src/integrations/anthropic.ts`, plain fetch, `claude-haiku-4-5`
-— a single constant; upgrade to `claude-sonnet-5`/`claude-opus-5` there if
+The model (`src/integrations/anthropic.ts`, plain fetch, Claude Haiku —
+`anthropic/claude-haiku-4.5` through OpenRouter by default, see "One AI
+account" below; one constant per provider, upgrade to Sonnet/Opus there if
 multi-step asks start misfiring) gets the last ~15 messages of the
 conversation plus tools:
 
@@ -240,10 +242,37 @@ The @mention health probe (any venture channel) now includes manager stats:
 messages handled, pending confirmations, last model call latency. Model
 latency and token usage are logged per call; the API key never is.
 
+## One AI account: OpenRouter
+
+Both model clients bill to a single OpenRouter account
+(`src/integrations/openrouter.ts`, plain fetch against
+`https://openrouter.ai/api/v1/chat/completions`, `OPENROUTER_API_KEY`):
+the manager as `anthropic/claude-haiku-4.5`, the framing agent as
+`openai/gpt-4o-mini` — the model names are constants in their two files,
+one per provider, and OpenRouter passes provider prices through without
+markup. The manager's tool-use goes through OpenRouter's standard tool
+calling (`tools` → `tool_calls` → `tool` messages, a documented feature of
+that model); `anthropic.ts` translates to and from the Anthropic block shape
+the rest of the bot speaks, so `manager.ts` never knows which provider
+answered. The round-trip is pinned in `anthropic.test.ts`.
+
+`AI_PROVIDER` picks the path: unset → OpenRouter when `OPENROUTER_API_KEY`
+is set, otherwise the direct providers (warned in the log on every call, so
+the day the key lands nothing else changes); `openrouter` → always
+OpenRouter (missing key = loud error); `direct` → always
+`api.anthropic.com` / `api.openai.com` with `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY`. The direct paths stay because OpenRouter's OpenAI-shaped
+API cannot carry Anthropic-native request features: server-side tools
+(`web_search`), beta headers (server-side fallbacks, structured outputs /
+`output_config`), or the native `system` + `input_schema` wire format. The
+two Deno edge functions (`claude-bridge`, `weekly-insight`) need exactly
+those and keep calling Anthropic directly with `ANTHROPIC_API_KEY` — they
+never go through OpenRouter.
+
 ## The 3-second rule
 
 Slack retries anything not acked within 3 seconds, so every route returns
-its 200 immediately and anything slow (Supabase, Anthropic, OpenAI) runs
+its 200 immediately and anything slow (Supabase, the model calls) runs
 after the ack — fire-and-forget with error logging, and for interactions the
 outcome is delivered through the payload's `response_url` (valid 30
 minutes). Keep it that way when the pipeline lands.
@@ -259,8 +288,10 @@ dashboard any more:
 
 `PORT` (Render injects it), `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`,
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_SECRET`,
-`ANTHROPIC_API_KEY`, `OWNER_SLACK_USER_ID` (the AI Manager's owner gate —
-Slack profile → "…" → Copy member ID), `OPENAI_API_KEY`, `BLOTATO_API_KEY`.
+`OPENROUTER_API_KEY` (the one AI account), `AI_PROVIDER` (optional, see
+"One AI account"), `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (direct-provider
+path only), `OWNER_SLACK_USER_ID` (the AI Manager's owner gate — Slack
+profile → "…" → Copy member ID), `BLOTATO_API_KEY`.
 
 ## Local development
 
