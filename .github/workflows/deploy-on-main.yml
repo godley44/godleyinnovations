@@ -166,7 +166,7 @@ jobs:
             supabase functions deploy "$fn" --project-ref "$PROJECT_REF" --use-api
           done
 
-      - name: Post the deploy summary to #studio-admin
+      - name: "Post the deploy summary to #studio-admin"
         if: always()
         env:
           BOT_URL: ${{ secrets.BOT_URL }}
