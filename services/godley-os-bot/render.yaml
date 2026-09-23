@@ -7,6 +7,11 @@
 #
 # PORT is not listed below on purpose: Render injects it automatically and
 # src/index.ts binds to it.
+#
+# Values: every `sync: false` entry is populated by Doppler's Render
+# integration from the vault config godley-os/prd (docs/secrets.md) — never
+# typed into the dashboard. The list below is the bot's contract, i.e. the
+# names src/ reads.
 services:
   - type: web
     name: godley-os-bot

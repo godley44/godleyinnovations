@@ -1,29 +1,49 @@
 # deploy-on-main: the production deploy pipeline. Runs on every push to main
-# (i.e. every squash-merged PR) and does the three things that used to be done
-# by hand:
+# (i.e. every squash-merged PR) and does the things that used to be done by
+# hand:
 #
-#   1. applies new Supabase migrations — `supabase db push`, in filename order,
+#   1. fetches every deploy secret from the Doppler vault (project godley-os,
+#      config prd — the layout is in docs/secrets.md);
+#   2. applies new Supabase migrations — `supabase db push`, in filename order,
 #      one transaction per file, stops on the first error (verified: a failing
 #      file leaves no history row and none of its statements applied);
-#   2. deploys the edge functions whose source changed in this push (all of
+#   3. writes the edge functions' secrets from the vault (`supabase secrets
+#      set`) so the functions and the bot are fed from the same place;
+#   4. deploys the edge functions whose source changed in this push (all of
 #      them when supabase/config.toml changed, since that file carries each
 #      function's verify_jwt setting);
-#   3. posts a one-line summary to #studio-admin through the bot's
-#      POST /admin/notify — on success AND on failure.
+#   5. posts a one-line summary to #studio-admin through the bot's
+#      POST /admin/notify — on success AND on failure — naming where the
+#      secrets came from.
 #
-# The bot itself is deployed by Render (it watches services/godley-os-bot) and
-# the app by Vercel; this workflow only reports on those.
+# The bot itself is deployed by Render (it watches services/godley-os-bot and
+# its environment is synced from the same Doppler config by Doppler's Render
+# integration) and the app by Vercel; this workflow only reports on those.
 #
 # Migrations never run for PR branches: the trigger below is `push` to main
 # only, and scripts/check-approval-gate.mjs asserts that stays true.
 #
-# Secrets (Settings → Secrets and variables → Actions):
-#   SUPABASE_ACCESS_TOKEN  Supabase account access token (functions deploy)
+# Secrets — the ONE GitHub repo secret (Settings → Secrets and variables →
+# Actions) is:
+#   DOPPLER_TOKEN   a read-only Doppler service token for config godley-os/prd
+# Everything else is fetched from that config at run time by
+# dopplerhq/secrets-fetch-action, which masks every value in the log:
+#   SUPABASE_ACCESS_TOKEN  Supabase account access token (functions deploy,
+#                          function secrets)
 #   SUPABASE_DB_URL        Session-pooler connection string incl. password
 #   BOT_URL                the bot's Render URL, e.g. https://godley-os-bot.onrender.com
-#   BOT_ADMIN_SECRET       the bot's ADMIN_SECRET (same value as on Render)
-# The first two are required; without the last two the deploy still runs and
-# the summary step only warns that it could not post.
+#   ADMIN_SECRET           the bot's admin bearer (the same value Render gets)
+#   ANTHROPIC_API_KEY, OS_WEBHOOK_SECRET, BRIDGE_SHARED_SECRET
+#                          pushed to the edge functions (step 3) when present
+#
+# Transition (until the vault holds everything): a name that is missing from
+# the vault — or all of them, while DOPPLER_TOKEN itself is not set yet —
+# falls back to the legacy GitHub secret of the same name
+# (SUPABASE_ACCESS_TOKEN, SUPABASE_DB_URL, BOT_URL, BOT_ADMIN_SECRET), so a
+# deploy never breaks mid-migration. The #studio-admin summary says which
+# source each run used; a run that reports "secrets: Doppler" with nothing
+# "still from GitHub" is the end-to-end proof, after which the four legacy
+# secrets are unused and can be deleted.
 
 name: deploy-on-main
 
@@ -50,6 +70,13 @@ env:
   # baseline step). Append nothing here: every later migration is applied
   # by `db push` and records itself.
   BASELINE_MIGRATIONS: "001 002 003 004 005 006 007"
+  # Edge-function secrets the vault feeds (step 3). SUPABASE_* names are
+  # reserved by Supabase and are never pushed; a name absent from the vault
+  # is skipped (its hand-set value on Supabase stays) and reported.
+  # WEEKLY_JOB_SECRET is deliberately NOT here: its caller half lives in the
+  # Supabase Vault (migration 003, read by pg_cron at each firing), so it
+  # must change in both places at once — by hand, never one side from here.
+  FUNCTION_SECRET_NAMES: "ANTHROPIC_API_KEY OS_WEBHOOK_SECRET BRIDGE_SHARED_SECRET"
 
 jobs:
   deploy:
@@ -61,20 +88,74 @@ jobs:
           # main head.
           fetch-depth: 0
 
+      # `secrets` is not readable in a step's `if`, so this step turns the
+      # token's presence into an output the vault step can gate on — the
+      # token itself is exposed to this one step only, never job-wide.
+      - name: Is the vault token set?
+        id: vault
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          if [ -n "$DOPPLER_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "DOPPLER_TOKEN is set — secrets come from the Doppler vault"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DOPPLER_TOKEN is not set — falling back to the legacy GitHub secrets for this run (see docs/secrets.md)"
+          fi
+
+      - name: Fetch secrets from the Doppler vault
+        id: doppler
+        if: steps.vault.outputs.enabled == 'true'
+        # A service token is scoped to exactly one config, so project/config
+        # need no spelling out here. Every secret becomes a masked step
+        # output (steps.doppler.outputs.<NAME>); nothing is injected into the
+        # environment of later steps unless a step asks for it by name.
+        uses: dopplerhq/secrets-fetch-action@v2.0.0
+        with:
+          doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+
       - name: Check the required secrets are present
         id: secrets
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          VAULT_ENABLED: ${{ steps.vault.outputs.enabled }}
+          # Vault values (empty when the vault step was skipped or the name
+          # is not in the config yet) …
+          V_SUPABASE_ACCESS_TOKEN: ${{ steps.doppler.outputs.SUPABASE_ACCESS_TOKEN }}
+          V_SUPABASE_DB_URL: ${{ steps.doppler.outputs.SUPABASE_DB_URL }}
+          V_BOT_URL: ${{ steps.doppler.outputs.BOT_URL }}
+          V_ADMIN_SECRET: ${{ steps.doppler.outputs.ADMIN_SECRET }}
+          # … and the resolved values every later step uses (vault first,
+          # legacy GitHub secret second).
+          SUPABASE_ACCESS_TOKEN: ${{ steps.doppler.outputs.SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_URL: ${{ steps.doppler.outputs.SUPABASE_DB_URL || secrets.SUPABASE_DB_URL }}
+          BOT_URL: ${{ steps.doppler.outputs.BOT_URL || secrets.BOT_URL }}
+          BOT_ADMIN_SECRET: ${{ steps.doppler.outputs.ADMIN_SECRET || secrets.BOT_ADMIN_SECRET }}
+        # Names only are ever printed or written to outputs — never a value.
         run: |
           missing=()
           [ -n "$SUPABASE_ACCESS_TOKEN" ] || missing+=(SUPABASE_ACCESS_TOKEN)
           [ -n "$SUPABASE_DB_URL" ] || missing+=(SUPABASE_DB_URL)
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Missing repo secret(s): ${missing[*]} — add them under Settings → Secrets and variables → Actions, then re-run this workflow."
+            echo "::error::Missing secret(s): ${missing[*]} — add them to the Doppler config godley-os/prd (docs/secrets.md), then re-run this workflow."
             exit 1
           fi
-          echo "secrets present"
+
+          fallback=()
+          [ -n "$V_SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_ACCESS_TOKEN" ] || fallback+=(SUPABASE_ACCESS_TOKEN)
+          [ -n "$V_SUPABASE_DB_URL" ] || [ -z "$SUPABASE_DB_URL" ] || fallback+=(SUPABASE_DB_URL)
+          [ -n "$V_BOT_URL" ] || [ -z "$BOT_URL" ] || fallback+=(BOT_URL)
+          [ -n "$V_ADMIN_SECRET" ] || [ -z "$BOT_ADMIN_SECRET" ] || fallback+=(BOT_ADMIN_SECRET)
+
+          if [ "$VAULT_ENABLED" = "true" ]; then source=doppler; else source=github; fi
+          {
+            echo "source=$source"
+            echo "fallback=${fallback[*]}"
+          } >> "$GITHUB_OUTPUT"
+          echo "secrets present — source: $source; still from legacy GitHub secrets: ${fallback[*]:-none}"
+          if [ "$source" = "doppler" ] && [ "${#fallback[@]}" -gt 0 ]; then
+            echo "::notice::Still read from the legacy GitHub secrets (not in the vault yet): ${fallback[*]}"
+          fi
 
       - name: Work out what this push changed
         id: changes
@@ -129,7 +210,7 @@ jobs:
       - name: Baseline the migration history (idempotent)
         id: baseline
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_URL: ${{ steps.doppler.outputs.SUPABASE_DB_URL || secrets.SUPABASE_DB_URL }}
         # `migration repair --status applied` is an upsert into
         # supabase_migrations.schema_migrations (ON CONFLICT DO UPDATE in the
         # CLI source): it records the hand-applied versions WITHOUT running
@@ -140,7 +221,7 @@ jobs:
       - name: Apply new migrations
         id: migrate
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_URL: ${{ steps.doppler.outputs.SUPABASE_DB_URL || secrets.SUPABASE_DB_URL }}
         # Applies every local migration not yet in the remote history, in
         # filename order; a failure inside a file rolls that file back and
         # stops the whole workflow (non-zero exit). Nothing pending → "Remote
@@ -151,11 +232,65 @@ jobs:
           echo "applied=$applied" >> "$GITHUB_OUTPUT"
           echo "migrations applied this run: ${applied:-none}"
 
+      - name: Write the edge functions' secrets from the vault
+        id: fn_secrets
+        if: steps.vault.outputs.enabled == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ steps.doppler.outputs.SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_ACCESS_TOKEN }}
+          FN_ANTHROPIC_API_KEY: ${{ steps.doppler.outputs.ANTHROPIC_API_KEY }}
+          FN_OS_WEBHOOK_SECRET: ${{ steps.doppler.outputs.OS_WEBHOOK_SECRET }}
+          FN_BRIDGE_SHARED_SECRET: ${{ steps.doppler.outputs.BRIDGE_SHARED_SECRET }}
+        # `supabase secrets set` creates-or-updates exactly the names given
+        # and leaves every other function secret alone, so pushing the vault's
+        # subset every deploy keeps the functions on the vault's values
+        # without touching anything the vault does not hold yet. Functions
+        # read new values immediately — no redeploy needed. Values travel as
+        # NAME=VALUE arguments built from the environment; only names are
+        # printed. Verified afterwards against `supabase secrets list`.
+        run: |
+          pairs=()
+          synced=()
+          missing=()
+          for name in $FUNCTION_SECRET_NAMES; do
+            var="FN_$name"
+            value="${!var}"
+            if [ -n "$value" ]; then
+              pairs+=("$name=$value")
+              synced+=("$name")
+            else
+              missing+=("$name")
+            fi
+          done
+          if [ "${#pairs[@]}" -eq 0 ]; then
+            echo "::notice::None of the edge-function secrets ($FUNCTION_SECRET_NAMES) are in the vault yet — the functions keep their hand-set values."
+            echo "synced=" >> "$GITHUB_OUTPUT"
+            echo "missing=${missing[*]}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "writing to the edge functions: ${synced[*]}"
+          supabase secrets set --project-ref "$PROJECT_REF" "${pairs[@]}"
+
+          listing="$(supabase secrets list --project-ref "$PROJECT_REF")"
+          for name in "${synced[@]}"; do
+            if ! printf '%s\n' "$listing" | grep -qE "(^|[^A-Z0-9_])$name([^A-Z0-9_]|$)"; then
+              echo "::error::$name is not in the function secrets after 'secrets set' — refusing to continue."
+              exit 1
+            fi
+          done
+          echo "verified present on Supabase: ${synced[*]}"
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice::Not in the vault yet (hand-set values on Supabase stay): ${missing[*]}"
+          fi
+          {
+            echo "synced=${synced[*]}"
+            echo "missing=${missing[*]}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Deploy changed edge functions
         id: functions
         if: steps.changes.outputs.functions != ''
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_ACCESS_TOKEN: ${{ steps.doppler.outputs.SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_ACCESS_TOKEN }}
           FUNCTIONS: ${{ steps.changes.outputs.functions }}
         # verify_jwt per function comes from supabase/config.toml (all three
         # existing functions gate on a shared secret, so it is off for them).
@@ -169,8 +304,8 @@ jobs:
       - name: "Post the deploy summary to #studio-admin"
         if: always()
         env:
-          BOT_URL: ${{ secrets.BOT_URL }}
-          BOT_ADMIN_SECRET: ${{ secrets.BOT_ADMIN_SECRET }}
+          BOT_URL: ${{ steps.doppler.outputs.BOT_URL || secrets.BOT_URL }}
+          BOT_ADMIN_SECRET: ${{ steps.doppler.outputs.ADMIN_SECRET || secrets.BOT_ADMIN_SECRET }}
           JOB_STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
@@ -178,10 +313,16 @@ jobs:
           APPLIED_MIGRATIONS: ${{ steps.migrate.outputs.applied }}
           FUNCTIONS_PLANNED: ${{ steps.changes.outputs.functions }}
           BOT_CHANGED: ${{ steps.changes.outputs.bot_changed }}
+          SECRETS_SOURCE: ${{ steps.secrets.outputs.source }}
+          SECRETS_FALLBACK: ${{ steps.secrets.outputs.fallback }}
+          FUNCTION_SECRETS_SYNCED: ${{ steps.fn_secrets.outputs.synced }}
+          FUNCTION_SECRETS_MISSING: ${{ steps.fn_secrets.outputs.missing }}
+          OUTCOME_VAULT: ${{ steps.doppler.outcome }}
           OUTCOME_SECRETS: ${{ steps.secrets.outcome }}
           OUTCOME_CHANGES: ${{ steps.changes.outcome }}
           OUTCOME_CLI: ${{ steps.cli.outcome }}
           OUTCOME_BASELINE: ${{ steps.baseline.outcome }}
           OUTCOME_MIGRATE: ${{ steps.migrate.outcome }}
+          OUTCOME_FN_SECRETS: ${{ steps.fn_secrets.outcome }}
           OUTCOME_FUNCTIONS: ${{ steps.functions.outcome }}
         run: node scripts/deploy-notify.mjs

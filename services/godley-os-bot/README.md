@@ -251,7 +251,11 @@ minutes). Keep it that way when the pipeline lands.
 ## Environment variables
 
 All documented with placeholders in [`.env.example`](.env.example) — copy to
-`.env` locally, set real values only in the Render dashboard:
+`.env` locally. In production the real values live in the **Doppler vault**
+(project `godley-os`, config `prd` — see
+[`docs/secrets.md`](../../docs/secrets.md)) and Doppler's Render integration
+syncs them into this service's environment; nothing is typed into the Render
+dashboard any more:
 
 `PORT` (Render injects it), `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`,
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_SECRET`,
@@ -284,11 +288,11 @@ The service deploys from this monorepo, not a separate repo:
 3. Settings: runtime **Node**, build command `npm install && npm run build`,
    start command `npm start`, health check path `/health`, plan **Starter**
    (always-on; the free tier sleeps and would miss Slack's 3-second window).
-4. Add the environment variables in the Render dashboard (Environment tab):
-   `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `SUPABASE_URL`,
-   `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `OWNER_SLACK_USER_ID`,
-   `OPENAI_API_KEY`, `BLOTATO_API_KEY`. (`PORT` is injected by Render
-   automatically.)
+4. Environment variables come from the Doppler vault: in Doppler, connect
+   the Render integration (a Render API key from Render → Account Settings
+   → API Keys) to this service and sync config `godley-os/prd` — the list
+   of names is in [`docs/secrets.md`](../../docs/secrets.md). (`PORT` is
+   injected by Render automatically.)
 5. Deploy. When the health check at `/health` is green, point the Slack app
    at it (below).
 
