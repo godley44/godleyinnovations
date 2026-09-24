@@ -16,10 +16,13 @@
 //   2. Raw outbound HTTP (`fetch(`) in the bot is confined to an allowlist of
 //      integration files. A new file talking to the internet must be listed
 //      here, which forces the question "does this go through the gate?".
-//   3. The Blotato publish primitives (publishPost / getPostStatus) are called
-//      from exactly one place: the poller's publish step, which only picks
-//      content_calendar rows in status approved/publishing — and 'approved' is
-//      set by apply_proposal() alone.
+//   3. The Blotato publish primitives (publishPost / getPostStatus /
+//      uploadMedia) are called from exactly one place: the poller's publish
+//      step, which only picks content_calendar rows in status
+//      approved/publishing — and 'approved' is set by apply_proposal() alone.
+//      Likewise the content agent's filing executor (executeFiling — it files
+//      a PROPOSAL, never publishes) runs only from content-agent.ts, the
+//      confirmation gate's execute half.
 //   4. Nobody flips a proposal to 'approved' except the database function:
 //      no `status: "approved"` literal in any TS/TSX; `.rpc(` is only ever
 //      `apply_proposal`, and only from the decision paths — the app's
@@ -113,9 +116,10 @@ const FETCH_ALLOWLIST = new Set([
   `${BOT_SRC}/integrations/openai.ts`, // framing — output becomes a NEW pending proposal
   `${BOT_SRC}/integrations/anthropic.ts`, // AI Manager model calls — its acts run only through decisions.ts after a "yes"
   `${BOT_SRC}/integrations/openrouter.ts`, // the shared model gateway the two above call by default — same outputs, same gate
+  `${BOT_SRC}/integrations/imgflip.ts`, // meme RENDERING (a preview image for the owner's eyes) — publishing still goes through Blotato behind the gate
   `${BOT_SRC}/integrations/elevenlabs.ts`, // narration — runs only for an APPROVED video.script; output is a file, never a post
   `${BOT_SRC}/integrations/pictory.ts`, // video assembly — same; the finished video becomes a NEW pending social.post proposal
-  `${BOT_SRC}/lib/slack-web.ts`, // Slack is the workroom, not an external platform
+  `${BOT_SRC}/lib/slack-web.ts`, // Slack is the workroom, not an external platform (incl. downloading the owner's own file drops)
   `${BOT_SRC}/routes/slack-interactions.ts`, // response_url acknowledgement of a decision
 ]);
 for (const rel of walk(BOT_SRC, [".ts"])) {
@@ -128,7 +132,7 @@ for (const rel of walk(BOT_SRC, [".ts"])) {
 // --- 3. one publish call site, fed only by approved rows -------------------
 {
   const POLLER = `${BOT_SRC}/lib/report-poller.ts`;
-  for (const fn of ["publishPost", "getPostStatus"]) {
+  for (const fn of ["publishPost", "getPostStatus", "uploadMedia"]) {
     const sites = [];
     for (const rel of walk(BOT_SRC, [".ts"])) {
       if (isTest(rel) || rel === `${BOT_SRC}/integrations/blotato.ts`) continue;
@@ -147,6 +151,15 @@ for (const rel of walk(BOT_SRC, [".ts"])) {
   }
   if (poller && !/\.from\("content_calendar"\)[\s\S]{0,200}\.in\("status", \["approved", "publishing"\]\)/.test(poller)) {
     fail(`${POLLER} must select publish work with .from("content_calendar")….in("status", ["approved", "publishing"])`);
+  }
+  // The content agent's filing executor: one caller, the agent's own
+  // confirmation branch (reached only after the owner's exact "yes").
+  const AGENT = `${BOT_SRC}/lib/content-agent.ts`;
+  const ACTS = `${BOT_SRC}/lib/content-agent-acts.ts`;
+  for (const rel of walk(BOT_SRC, [".ts"])) {
+    if (isTest(rel) || rel === ACTS) continue;
+    const n = (readCode(rel).match(/\bexecuteFiling\b/g) ?? []).length;
+    if (n > 0 && rel !== AGENT) fail(`${rel} references executeFiling — only ${AGENT} may (the content agent's confirmed-yes branch)`);
   }
 }
 

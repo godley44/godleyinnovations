@@ -10,6 +10,11 @@ export interface ManagerStats {
   lastModelLatencyMs: number | null;
   lastModelAt: string | null;
   lastError: string | null;
+  // The venture content agent (high-touch channels) shares the counters'
+  // home: messages it handled, images it mirrored, packages it filed.
+  contentMessagesHandled: number;
+  contentImagesIngested: number;
+  contentFilings: number;
 }
 
 const stats: ManagerStats = {
@@ -19,7 +24,22 @@ const stats: ManagerStats = {
   lastModelLatencyMs: null,
   lastModelAt: null,
   lastError: null,
+  contentMessagesHandled: 0,
+  contentImagesIngested: 0,
+  contentFilings: 0,
 };
+
+export function recordContentMessage(): void {
+  stats.contentMessagesHandled += 1;
+}
+
+export function recordContentImage(): void {
+  stats.contentImagesIngested += 1;
+}
+
+export function recordContentFiling(): void {
+  stats.contentFilings += 1;
+}
 
 export function recordManagerMessage(): void {
   stats.messagesHandled += 1;

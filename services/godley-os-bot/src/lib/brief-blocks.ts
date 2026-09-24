@@ -27,7 +27,19 @@ export type SlackBlock =
   | { type: "section"; text: { type: "mrkdwn"; text: string } }
   | { type: "context"; elements: { type: "mrkdwn"; text: string }[] }
   | { type: "actions"; elements: SlackButton[] }
+  | { type: "image"; image_url: string; alt_text: string; title?: { type: "plain_text"; text: string } }
   | { type: "divider" };
+
+// An inline image (the meme preview in an approval prompt or a riff render
+// in the thread). Slack fetches image_url itself, so it must be public.
+export function image(imageUrl: string, altText: string, title?: string): SlackBlock {
+  return {
+    type: "image",
+    image_url: imageUrl,
+    alt_text: altText.slice(0, 2000) || "image",
+    ...(title ? { title: { type: "plain_text", text: title.slice(0, 2000) } } : {}),
+  };
+}
 
 export interface BriefMessageInput {
   briefText: string;

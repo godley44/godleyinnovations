@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildApprovalPrompt, buildDecidedMessage } from "./approval-blocks.js";
+import { buildApprovalPrompt, buildDecidedMessage, promptThread } from "./approval-blocks.js";
 import type { SlackBlock, SlackButton } from "./brief-blocks.js";
 
 const PROPOSAL_ID = "3d0f8a9e-1111-2222-3333-444455556666";
@@ -214,4 +214,62 @@ test("disarm variant (no via) reads as a plain outcome", () => {
     decidedAt: new Date("2026-08-24T15:00:00Z"),
   });
   assert.equal(sectionTexts(blocks)[0], "❌ *Rejected* · 2026-08-24 15:00 UTC");
+});
+
+// --- image posts from the content agent (migration 008) ----------------------
+
+const IMAGE_PAYLOAD = {
+  calendar_id: "cal-1",
+  text: "Reading the room.\n\nvia @templarpilled",
+  platforms: ["instagram", "facebook"],
+  mediaUrls: ["https://proj.supabase.co/storage/v1/object/public/content-media/couplestherapy101/item-1/source.png"],
+  contentType: "meme",
+  contentItemId: "item-1",
+  captions: {
+    couplestherapy101: "Reading the room.\n\nvia @templarpilled",
+    "kingdom-building-os": "Reading the room.\n\nvia @templarpilled\n\nMore of this at @CouplesTherapy101.",
+  },
+  targets: [
+    { slug: "couplestherapy101", name: "CouplesTherapy101", platforms: ["instagram", "facebook"] },
+    { slug: "kingdom-building-os", name: "Kingdom Building OS", platforms: ["instagram", "facebook"] },
+  ],
+  credit: "@templarpilled",
+  slack_channel_id: "C_CT",
+  slack_thread_ts: "1727.000001",
+};
+
+test("an image post's prompt shows the image, every target venture's caption, the full target list, and the buttons", () => {
+  const { blocks } = buildApprovalPrompt({
+    proposalId: PROPOSAL_ID,
+    ventureName: "CouplesTherapy101",
+    action: "social.post",
+    proposedBy: "content-agent",
+    createdAt: CREATED_AT,
+    payload: IMAGE_PAYLOAD,
+  });
+  const imageBlock = blocks.find((b): b is Extract<SlackBlock, { type: "image" }> => b.type === "image");
+  assert.ok(imageBlock, "the image preview is a Block Kit image block");
+  assert.equal(imageBlock.image_url, IMAGE_PAYLOAD.mediaUrls[0]);
+  const texts = sectionTexts(blocks).join("\n");
+  assert.match(texts, /\*CouplesTherapy101\* → Instagram, Facebook/);
+  assert.match(texts, /\*Kingdom Building OS\* → Instagram, Facebook/);
+  assert.match(texts, /More of this at @CouplesTherapy101\./, "the KBOS caption (with its CTA) is shown verbatim");
+  const ctx = blocks.filter((b): b is Extract<SlackBlock, { type: "context" }> => b.type === "context").map((b) => b.elements[0]!.text).join("\n");
+  assert.match(ctx, /CouplesTherapy101 \(Instagram, Facebook\); Kingdom Building OS \(Instagram, Facebook\)/);
+  assert.match(ctx, /Credit: @templarpilled/);
+  const actions = blocks.find((b): b is Extract<SlackBlock, { type: "actions" }> => b.type === "actions");
+  assert.deepEqual(
+    actions?.elements.map((e: SlackButton) => [e.action_id, e.value]),
+    [
+      ["approve", PROPOSAL_ID],
+      ["reject", PROPOSAL_ID],
+    ],
+  );
+});
+
+test("promptThread: the buttons go into the content item's thread only when it is in the venture's own channel", () => {
+  assert.equal(promptThread(IMAGE_PAYLOAD, "C_CT"), "1727.000001");
+  assert.equal(promptThread(IMAGE_PAYLOAD, "C_OTHER"), undefined, "a thread in some other channel is ignored");
+  assert.equal(promptThread({ ...IMAGE_PAYLOAD, slack_thread_ts: "not-a-ts" }, "C_CT"), undefined);
+  assert.equal(promptThread({ text: "plain text post", platforms: ["twitter"] }, "C_LB"), undefined, "text posts stay top-level");
 });

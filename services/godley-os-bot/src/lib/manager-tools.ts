@@ -21,6 +21,7 @@ export const ACT_TOOL_NAMES: readonly ActToolName[] = [
   "approve_proposal",
   "reject_proposal",
   "create_social_draft",
+  "sync_blotato_accounts",
 ];
 
 export function isActTool(name: string): name is ActToolName {
@@ -134,6 +135,22 @@ export const MANAGER_TOOLS: AnthropicTool[] = [
         },
       },
       required: ["venture_slug", "text", "platforms"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "sync_blotato_accounts",
+    description:
+      "Look up a venture's connected Blotato accounts (Instagram + Facebook, with the Facebook Page id) using " +
+      "THAT venture's own Blotato key, and write their ids into venture_platforms so its posts can publish. " +
+      "Internal configuration only — publishes nothing. The system will ask the owner to confirm before running it. " +
+      'Trigger phrase: "sync blotato accounts for <slug>".',
+    input_schema: {
+      type: "object",
+      properties: {
+        venture_slug: { type: "string", description: 'The venture\'s slug, e.g. "couplestherapy101" or "kingdom-building-os".' },
+      },
+      required: ["venture_slug"],
       additionalProperties: false,
     },
   },
@@ -282,9 +299,12 @@ async function recentActivity(input: Record<string, unknown>): Promise<unknown> 
   });
 
   const publishes = capture(async () => {
+    // The ledger's own venture is the TARGET (whose key/account published);
+    // the post's venture is the source — they differ for a cross-published
+    // meme (migration 008).
     const { data, error } = await supabase
       .from("social_publishes")
-      .select("calendar_id, platform, status, public_url, error, created_at, calendar:content_calendar(venture:ventures(name))")
+      .select("calendar_id, platform, status, public_url, error, created_at, venture:ventures(name), calendar:content_calendar(venture:ventures(name))")
       .order("created_at", { ascending: false })
       .limit(limit);
     if (error) throw new Error(error.message);
@@ -293,7 +313,8 @@ async function recentActivity(input: Record<string, unknown>): Promise<unknown> 
       const cal = (Array.isArray(d.calendar) ? d.calendar[0] : d.calendar) as Record<string, unknown> | null;
       return {
         calendar_id: d.calendar_id,
-        venture: ventureName(cal?.venture),
+        venture: ventureName(d.venture),
+        post_venture: ventureName(cal?.venture),
         platform: d.platform,
         status: d.status,
         public_url: d.public_url,

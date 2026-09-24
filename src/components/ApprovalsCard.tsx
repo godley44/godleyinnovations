@@ -48,16 +48,82 @@ function summarize(p: Proposal): string {
     case "video.script":
       return `Video script — "${String(d.title ?? "")}" (narration + assembly start after approval):`;
     case "social.post": {
-      const platforms = Array.isArray(d.platforms) ? d.platforms.map(String).join(", ") : "";
+      const targets = socialTargets(d);
+      const where =
+        targets.length > 0
+          ? targets.map((t) => `${t.name} (${t.platforms.map(platformLabel).join(", ") || "no platform"})`).join("; ")
+          : Array.isArray(d.platforms)
+            ? (d.platforms as unknown[]).filter((p): p is string => typeof p === "string").map(platformLabel).join(", ")
+            : "the venture's platforms";
       return d.kind === "video"
-        ? `Publish VIDEO "${String(d.title ?? "")}" to ${platforms} — watch it below before approving:`
-        : `Publish to ${platforms}:`;
+        ? `Publish VIDEO "${String(d.title ?? "")}" to ${where} — watch it below before approving:`
+        : `Publish social post to ${where}:`;
     }
     default:
       // Unknown action: still shown (never hidden), just raw. apply_proposal
       // will refuse it with a clear error if approved.
       return `${p.action}: ${JSON.stringify(d)}`;
   }
+}
+
+// The content agent's social.post payload extras (see services/godley-os-bot,
+// src/lib/content-agent-acts.ts): the image, one caption per target
+// venture, and the target list. Absent on a text post, which shows its
+// text alone.
+const PLATFORM_LABELS: Record<string, string> = {
+  twitter: "X/Twitter",
+  linkedin: "LinkedIn",
+  youtube: "YouTube",
+  instagram: "Instagram",
+  facebook: "Facebook",
+};
+
+function platformLabel(platform: string): string {
+  return PLATFORM_LABELS[platform] ?? platform;
+}
+
+function socialTargets(payload: Record<string, unknown>): { slug: string; name: string; platforms: string[] }[] {
+  if (!Array.isArray(payload.targets)) return [];
+  return (payload.targets as unknown[]).flatMap((raw) => {
+    const t = raw as Record<string, unknown>;
+    if (typeof t.slug !== "string" || typeof t.name !== "string") return [];
+    const platforms = Array.isArray(t.platforms) ? (t.platforms as unknown[]).filter((p): p is string => typeof p === "string") : [];
+    return [{ slug: t.slug, name: t.name, platforms }];
+  });
+}
+
+function socialCaptions(payload: Record<string, unknown>): [string, string][] {
+  const captions = payload.captions;
+  if (typeof captions !== "object" || captions === null || Array.isArray(captions)) return [];
+  return Object.entries(captions as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string");
+}
+
+function firstMediaUrl(payload: Record<string, unknown>): string | null {
+  if (!Array.isArray(payload.mediaUrls)) return null;
+  const first = (payload.mediaUrls as unknown[]).find((u): u is string => typeof u === "string" && /^https?:\/\//.test(u));
+  return first ?? null;
+}
+
+function SocialPostPreview({ payload }: { payload: Record<string, unknown> }) {
+  const mediaUrl = firstMediaUrl(payload);
+  const targets = socialTargets(payload);
+  const captions = socialCaptions(payload);
+  const byTarget =
+    targets.length > 0 && captions.length > 0
+      ? targets.map((t) => ({ name: t.name, text: captions.find(([slug]) => slug === t.slug)?.[1] ?? String(payload.text ?? "") }))
+      : [{ name: null, text: String(payload.text ?? "") }];
+  return (
+    <div className="approval-social">
+      {mediaUrl && <img className="approval-image" src={mediaUrl} alt="post image" loading="lazy" />}
+      {byTarget.map((c, i) => (
+        <div key={i}>
+          {c.name && <p className="muted approval-meta">{c.name}</p>}
+          <p className="approval-payload prewrap">{c.text}</p>
+        </div>
+      ))}
+      {typeof payload.credit === "string" && payload.credit && <p className="muted approval-meta">Credit: {payload.credit}</p>}
+    </div>
+  );
 }
 
 function when(iso: string): string {
@@ -189,9 +255,10 @@ export function ApprovalsCard({ ventureId }: { ventureId?: string }) {
                     </a>
                   </p>
                 )}
-                {(p.action === "note.append" || p.action === "whatsapp.message" || p.action === "social.post") && (
+                {(p.action === "note.append" || p.action === "whatsapp.message") && (
                   <p className="approval-payload prewrap">{String(p.payload.text ?? "")}</p>
                 )}
+                {p.action === "social.post" && <SocialPostPreview payload={p.payload} />}
                 {p.action === "video.script" && (
                   <p className="approval-payload prewrap">{String(p.payload.script ?? "")}</p>
                 )}

@@ -1,8 +1,9 @@
 // Block Kit rendering for social-publish outcomes posted to the venture
-// channel after an approved social.post goes out via Blotato. One message
-// per post, one line per platform — a partial failure must show the
-// platforms that DID publish alongside the one that failed, never hide
-// them.
+// channel (or, for a content item, into its Slack thread) after an approved
+// social.post goes out via Blotato. One message per post, one line per
+// target — a partial failure must show the targets that DID publish
+// alongside the one that failed, never hide them. A cross-published post
+// names the venture on every line.
 
 import { context, esc, formatUtc, section, type SlackBlock } from "./brief-blocks.js";
 import type { SlackMessage } from "./approval-blocks.js";
@@ -12,13 +13,19 @@ const PLATFORM_LABELS: Record<string, string> = {
   linkedin: "LinkedIn",
   youtube: "YouTube",
   instagram: "Instagram",
+  facebook: "Facebook",
+  tiktok: "TikTok",
+  threads: "Threads",
+  bluesky: "Bluesky",
+  pinterest: "Pinterest",
 };
 
-export type PlatformOutcome =
+export type PlatformOutcome = { ventureName?: string } & (
   | { platform: string; status: "published"; publicUrl?: string }
   | { platform: string; status: "submitted" } // accepted by Blotato, result pending
   | { platform: string; status: "dry-run" }
-  | { platform: string; status: "failed"; detail: string };
+  | { platform: string; status: "failed"; detail: string }
+);
 
 export interface PublishSummaryInput {
   ventureName: string;
@@ -39,7 +46,7 @@ export function platformLabel(platform: string): string {
 const label = platformLabel;
 
 function outcomeLine(o: PlatformOutcome): string {
-  const name = esc(label(o.platform));
+  const name = esc(o.ventureName ? `${o.ventureName} · ${label(o.platform)}` : label(o.platform));
   switch (o.status) {
     case "published":
       return o.publicUrl ? `✅ *${name}* — published (<${o.publicUrl}|view post>)` : `✅ *${name}* — published`;

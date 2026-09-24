@@ -153,9 +153,87 @@ declare n int;
 begin
   select count(*) into n from storage.buckets where id = 'media' and public;
   if n <> 1 then raise exception 'public media bucket is missing'; end if;
+  select count(*) into n from storage.buckets where id = 'content-media' and public;
+  if n <> 1 then raise exception 'public content-media bucket (migration 009) is missing'; end if;
 end $$;
 select set_config('request.jwt.claims', '{"email":"godleyj5@gmail.com"}', false);
 set role app_user;
+-- Migration 009: high-touch ventures, the cross-publish map, content items,
+-- image posts, and the per-venture publish ledger.
+do $$
+declare n int; mode text;
+begin
+  select count(*) into n from ventures where slug in ('couplestherapy101', 'kingdom-building-os') and interaction_mode = 'high_touch';
+  if n <> 2 then raise exception 'expected both meme ventures upserted as high_touch, found %', n; end if;
+  select interaction_mode into mode from ventures where slug = 'test-venture';
+  if mode <> 'hands_off' then raise exception 'a venture created without a mode must default to hands_off (got %)', mode; end if;
+  select count(*) into n from ventures where slug in ('couplestherapy101', 'kingdom-building-os') and voice_prompt is not null;
+  if n <> 2 then raise exception 'voice_prompt was not seeded for both ventures'; end if;
+  select count(*) into n from venture_cross_publish where source_slug = 'couplestherapy101' and target_slug = 'kingdom-building-os';
+  if n <> 2 then raise exception 'expected 2 cross-publish rows (meme, note_card), found %', n; end if;
+  select count(*) into n from venture_platforms vp join ventures v on v.id = vp.venture_id
+    where v.slug in ('couplestherapy101', 'kingdom-building-os') and vp.platform in ('instagram', 'facebook');
+  if n <> 4 then raise exception 'expected instagram+facebook rows for both ventures, found %', n; end if;
+end $$;
+
+-- A content item turns into an image post that carries its captions; the
+-- same social.post approval flips it, exactly like a text post.
+insert into content_items (venture_id, slack_channel_id, slack_thread_ts, slack_file_id, media_url, source_credit)
+  select id, 'C_CT101', '1727.000100', 'F_TEST_1', 'https://example.test/content-media/ct101/x/meme.png', '@templarpilled'
+  from ventures where slug = 'couplestherapy101';
+insert into content_calendar (venture_id, kind, body, media_urls, platforms, status, content_item_id, captions)
+  select v.id, 'image', 'CT101 caption via @templarpilled', '["https://example.test/content-media/ct101/x/meme.png"]'::jsonb,
+         array['instagram','facebook'], 'proposed', ci.id,
+         '{"couplestherapy101": "CT101 caption via @templarpilled", "kingdom-building-os": "CT101 caption via @templarpilled"}'::jsonb
+  from ventures v join content_items ci on ci.venture_id = v.id
+  where v.slug = 'couplestherapy101' and ci.slack_file_id = 'F_TEST_1';
+insert into proposals (venture_id, action, payload, proposed_by)
+  select c.venture_id, 'social.post',
+         jsonb_build_object('calendar_id', c.id, 'text', c.body, 'platforms', c.platforms, 'contentItemId', c.content_item_id),
+         'content-agent'
+  from content_calendar c where c.kind = 'image';
+select apply_proposal(id) from proposals where status = 'pending';
+do $$
+declare st text;
+begin
+  select status into st from content_calendar where kind = 'image';
+  if st <> 'approved' then raise exception 'social.post approval did not flip the image post (got %)', st; end if;
+end $$;
+
+-- The publish ledger is per (post, venture, platform): the cross-published
+-- post has one instagram row per target venture, and a duplicate for the
+-- same venture is refused.
+insert into social_publishes (calendar_id, venture_id, platform, status)
+  select c.id, v.id, 'instagram', 'dry-run'
+  from content_calendar c, ventures v
+  where c.kind = 'image' and v.slug in ('couplestherapy101', 'kingdom-building-os');
+do $$
+declare n int; cal uuid; kb uuid;
+begin
+  select count(*) into n from social_publishes where platform = 'instagram';
+  if n <> 2 then raise exception 'expected one instagram ledger row per target venture, found %', n; end if;
+  select id into cal from content_calendar where kind = 'image';
+  select id into kb from ventures where slug = 'kingdom-building-os';
+  begin
+    insert into social_publishes (calendar_id, venture_id, platform, status) values (cal, kb, 'instagram', 'publishing');
+    raise exception 'duplicate (post, venture, platform) ledger row was NOT blocked';
+  exception when unique_violation then null;
+  end;
+  begin
+    insert into social_publishes (calendar_id, platform, status) values (cal, 'facebook', 'publishing');
+    raise exception 'a ledger row without venture_id was NOT blocked';
+  exception when not_null_violation then null;
+  end;
+end $$;
+
+-- The same Slack file can never become two content items.
+do $$
+begin
+  insert into content_items (venture_id, slack_channel_id, slack_thread_ts, slack_file_id)
+    select id, 'C_CT101', '1727.000200', 'F_TEST_1' from ventures where slug = 'couplestherapy101';
+  raise exception 'duplicate slack_file_id was NOT blocked';
+exception when unique_violation then null;
+end $$;
 
 -- RLS: any other signed-in email sees nothing and writes nothing.
 reset role;
@@ -178,3 +256,4 @@ end $$;
 
 reset role;
 select 'pipeline_test OK: apply, double-apply block, note append, social.post flip + guard, video.script + video_jobs claim, RLS isolation all verified' as result;
+select 'pipeline_test OK: apply, double-apply block, note append, social.post flip + guard, content items + per-venture ledger (008), RLS isolation all verified' as result;

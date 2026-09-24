@@ -159,6 +159,8 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
   overflow-y: auto;
 }
 .approval-meta { font-size: 0.8rem; }
+.approval-social { display: grid; gap: 6px; }
+.approval-image { max-width: 100%; max-height: 320px; border-radius: 8px; object-fit: contain; justify-self: start; }
 .approval-actions { display: flex; gap: 6px; align-items: center; }
 .approved-note { margin: 4px 0 10px; }
 

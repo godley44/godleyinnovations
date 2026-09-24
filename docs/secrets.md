@@ -37,7 +37,11 @@ Supabase by hand any more:
 | `ANTHROPIC_API_KEY` | ✓ (direct-provider path only, `AI_PROVIDER=direct`) | | ✓ `claude-bridge`, `weekly-insight` (always direct) | was in Render and hand-set on Supabase |
 | `OWNER_SLACK_USER_ID` | ✓ | | | was in Render |
 | `OPENAI_API_KEY` | ✓ (direct-provider path only, `AI_PROVIDER=direct`) | | | was in Render |
-| `BLOTATO_API_KEY` | ✓ | | | was in Render (`pending` = dry run) |
+| `BLOTATO_API_KEY` | ✓ | | | was in Render (`pending` = dry run) — since the meme MVP the **legacy** key, used by `lil-bull` only |
+| `BLOTATO_API_KEY__COUPLESTHERAPY101` | ✓ | | | new — CouplesTherapy101's own Blotato key (blotato.com → the CT101 workspace → API key); `pending`/unset = that venture publishes in dry run |
+| `BLOTATO_API_KEY__KINGDOM_BUILDING_OS` | ✓ | | | new — Kingdom Building OS's own Blotato key; same rule. One key per venture: a venture never publishes with another's key |
+| `IMGFLIP_USERNAME` / `IMGFLIP_PASSWORD` | ✓ | | | new — an imgflip.com account (free) for the content agent's meme riffs; unset = reposts only |
+| `CONTENT_AGENT_MODEL` | ✓ (optional) | | | new — the content agent's vision model id; unset = the manager's model |
 | `OPENROUTER_API_KEY` | ✓ | | | new — the bot's AI calls go through OpenRouter (openrouter.ai → Keys; prepaid credits) |
 | `ELEVENLABS_API_KEY` | ✓ | | | new — video narration in the cloned voice (elevenlabs.io → API Keys; Creator plan for cloning) |
 | `PICTORY_API_KEY` | ✓ | | | new — video assembly (pictory.ai API self-serve plan; key starts `pictai_`) |

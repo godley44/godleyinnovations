@@ -51,6 +51,8 @@ export function buildHealthText(state: PollerState, manager: ManagerStats): stri
     `publishes waiting on the real Blotato key: ${waitingOnKey} · ` +
     `publishes pending confirmation: ${pendingConfirm} · needs attention: ${attention} · ` +
     `manager: ${manager.messagesHandled} message(s) handled · ` +
-    `pending confirmations: ${manager.pendingActions} · last model call: ${lastModel}.${failure}`
+    `pending confirmations: ${manager.pendingActions} · last model call: ${lastModel} · ` +
+    `content agent: ${manager.contentMessagesHandled} message(s), ${manager.contentImagesIngested} image(s), ` +
+    `${manager.contentFilings} filed.${failure}`
   );
 }

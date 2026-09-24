@@ -21,12 +21,18 @@
 //     and mark the row 'disarmed'. Buttons never stay live for a decided
 //     proposal.
 //  E. PUBLISH  — content_calendar rows whose social.post proposal was
-//     APPROVED → published per platform via Blotato (or dry-run logged while
-//     the key is the placeholder); claim-before-publish per (post, platform)
-//     in social_publishes (migration 007), one platform failing never blocks
-//     the others, venture channel gets a per-platform summary. Also sweeps
+//     APPROVED → published per TARGET via Blotato: the post's venture plus
+//     every venture_cross_publish target (migration 008), each platform
+//     through that venture's own key and venture_platforms row (media is
+//     uploaded to Blotato per venture first); or dry-run logged for a
+//     venture without a real key. Claim-before-publish per (post, venture,
+//     platform) in social_publishes, one target failing never blocks the
+//     others; the venture channel — or, for an image post, the content
+//     item's Slack thread — gets a per-target summary. Also sweeps
 //     'proposed' calendar rows whose proposal was REJECTED to 'rejected'
-//     (rejection never runs apply_proposal, so the bot owns that flip). The
+//     (rejection never runs apply_proposal, so the bot owns that flip). Text
+//     posts publish to X/LinkedIn, image posts to Instagram/Facebook, video
+//     posts (the video_jobs ledger's) to YouTube/Instagram Reels. The
 //     approval gate is the ONLY path here — scheduled_for is ignored.
 //  F. CONFIRM  — Blotato publishing is async, so 'submitted' ledger rows are
 //     polled (GET /v2/posts/:id) until 'published' (+public URL) or terminal
@@ -56,10 +62,11 @@
 // deployed ahead of the hand-run migration 005 keeps delivering briefs while
 // the prompt steps fail loudly with "run migration 005".
 
-import { buildPublishRequest, getPostStatus, isDryRun, publishPost } from "../integrations/blotato.js";
+import { buildPublishRequest, dryRunReason, getPostStatus, isDryRun, publishPost, uploadMedia } from "../integrations/blotato.js";
 import { frameForWhatsApp } from "../integrations/openai.js";
-import { buildApprovalPrompt, buildDecidedMessage } from "./approval-blocks.js";
+import { buildApprovalPrompt, buildDecidedMessage, promptThread } from "./approval-blocks.js";
 import { buildBriefMessage } from "./brief-blocks.js";
+import { expandPublishTargets, ledgerKey, type PublishTargetSpec, type StackRow, type TargetVenture } from "./content-publish.js";
 import { buildPublishSummary } from "./social-blocks.js";
 import { aggregateCalendar, outcomeFromRow, type PublishLedgerRow, type PublishLedgerStatus } from "./social-publish.js";
 import { getSupabase } from "./supabase.js";
@@ -141,8 +148,11 @@ export type PublishStatus =
 export interface PublishCandidate {
   calendarId: string;
   platform: string;
+  // The TARGET venture (whose key and account published) — for a
+  // cross-published post this differs from the post's own venture.
   ventureSlug: string;
   ventureName: string;
+  postVentureSlug: string;
   status: PublishStatus;
   submissionId?: string;
   publicUrl?: string;
@@ -756,18 +766,23 @@ async function runPromptStep(channels: () => Promise<Map<string, SlackChannel>>)
     }
 
     candidate.channelId = channelId;
+    const payload = (row.payload ?? {}) as Record<string, unknown>;
     const message = buildApprovalPrompt({
       proposalId: row.id,
       ventureName: venture.name,
       action: row.action,
       proposedBy: row.proposed_by,
       createdAt: new Date(row.created_at),
-      payload: (row.payload ?? {}) as Record<string, unknown>,
+      payload,
     });
+    // A content item's proposal is answered in the Slack thread the
+    // conversation lives in (the buttons land where the owner is looking);
+    // everything else goes to the top of the venture channel as before.
+    const threadTs = promptThread(payload, channelId);
 
     let messageTs: string;
     try {
-      messageTs = await postMessage({ channel: channelId, text: message.text, blocks: message.blocks });
+      messageTs = await postMessage({ channel: channelId, threadTs, text: message.text, blocks: message.blocks });
     } catch (postErr) {
       const reason = `chat.postMessage failed: ${postErr instanceof Error ? postErr.message : String(postErr)}`;
       candidate.status = "failed";
@@ -904,23 +919,34 @@ async function runDisarmStep(): Promise<PromptCandidate[]> {
 // --- Step E: publish approved social posts via Blotato ---------------------
 
 const MIGRATION_007 = "007_social_publishing.sql";
-// Dry-run publishes must work end-to-end BEFORE the real key (and therefore
-// before any real account id) exists; the logged would-send request carries
-// this placeholder so the gap is visible, not hidden.
+const MIGRATION_009 = "009_content_items.sql";
+// Dry-run publishes must work end-to-end BEFORE a venture's real key (and
+// therefore before any real account id) exists; the logged would-send
+// request carries these placeholders so the gap is visible, not hidden.
 const DRY_RUN_ACCOUNT_PLACEHOLDER = "account-id-not-set";
+const DRY_RUN_PAGE_PLACEHOLDER = "page-id-not-set";
 
-const CALENDAR_COLS = "id, venture_id, kind, title, body, media_urls, platforms, status, venture:ventures(name, slug)";
+const CALENDAR_COLS =
+  "id, venture_id, kind, title, body, media_urls, platforms, status, captions, content_item_id, venture:ventures(name, slug), " +
+  "content_item:content_items(id, content_type, slack_channel_id, slack_thread_ts)";
+
+type CalendarKind = "text" | "image" | "video";
 
 interface CalendarRow {
   id: string;
   venture_id: string;
+  kind: CalendarKind;
+  title: string | null; // YouTube title on a video post (migration 008)
   body: string;
-  kind: "text" | "video";
-  title: string | null;
   media_urls: string[];
   platforms: string[];
   status: string;
+  captions: Record<string, string>;
+  content_item_id: string | null;
   venture: { name: string; slug: string } | null;
+  // The Slack thread the content agent's conversation lives in — where the
+  // publish summary is answered for an image post.
+  thread: { channelId: string; threadTs: string; contentType: string } | null;
 }
 
 function normalizeCalendar(raw: unknown): CalendarRow | null {
@@ -936,39 +962,75 @@ function normalizeCalendar(raw: unknown): CalendarRow | null {
       venture = { name: v.name, slug: v.slug };
     }
   }
+  const captions: Record<string, string> = {};
+  if (typeof row.captions === "object" && row.captions !== null && !Array.isArray(row.captions)) {
+    for (const [k, v] of Object.entries(row.captions as Record<string, unknown>)) {
+      if (typeof v === "string") captions[k] = v;
+    }
+  }
+  const itemRaw = Array.isArray(row.content_item) ? row.content_item[0] : row.content_item;
+  let thread: CalendarRow["thread"] = null;
+  if (typeof itemRaw === "object" && itemRaw !== null) {
+    const i = itemRaw as Record<string, unknown>;
+    if (typeof i.slack_channel_id === "string" && typeof i.slack_thread_ts === "string") {
+      thread = {
+        channelId: i.slack_channel_id,
+        threadTs: i.slack_thread_ts,
+        contentType: typeof i.content_type === "string" ? i.content_type : "meme",
+      };
+    }
+  }
   return {
     id: row.id,
     venture_id: row.venture_id,
-    body: row.body,
-    kind: row.kind === "video" ? "video" : "text",
+    kind: row.kind === "video" ? "video" : row.kind === "image" ? "image" : "text",
     title: typeof row.title === "string" && row.title.trim() ? row.title : null,
+    body: row.body,
     media_urls: Array.isArray(row.media_urls) ? row.media_urls.filter((u): u is string => typeof u === "string") : [],
     platforms: row.platforms.filter((p): p is string => typeof p === "string"),
     status: typeof row.status === "string" ? row.status : "unknown",
+    captions,
+    content_item_id: typeof row.content_item_id === "string" ? row.content_item_id : null,
     venture,
+    thread,
   };
 }
 
 const PUBLISH_LEDGER_STATUSES: readonly string[] = ["publishing", "submitted", "published", "failed", "dry-run"];
+const LEDGER_COLS = "calendar_id, venture_id, platform, status, submission_id, public_url, error, venture:ventures(name, slug)";
 
 type YoutubePrivacy = "private" | "public" | "unlisted";
 function isYoutubePrivacy(value: string | null): value is YoutubePrivacy {
   return value === "private" || value === "public" || value === "unlisted";
 }
 
-// Which Blotato targets a post of this kind may publish to.
-function supportedPlatform(kind: "text" | "video", platform: string): "twitter" | "linkedin" | "youtube" | "instagram" | null {
+// Which Blotato targets a post of this kind may publish to: text posts go
+// to twitter/linkedin; image posts (the content agent's memes) to
+// instagram/facebook (and twitter/linkedin, which take images too); video
+// posts (kind='video', from the video_jobs ledger) to youtube/instagram.
+// The Blotato client enforces each platform's own requirements at
+// request-build time.
+type SupportedPlatform = "twitter" | "linkedin" | "youtube" | "instagram" | "facebook";
+function supportedPlatform(kind: CalendarKind, platform: string): SupportedPlatform | null {
   if (kind === "video") return platform === "youtube" || platform === "instagram" ? platform : null;
+  if (kind === "image") {
+    return platform === "instagram" || platform === "facebook" || platform === "twitter" || platform === "linkedin" ? platform : null;
+  }
   return platform === "twitter" || platform === "linkedin" ? platform : null;
 }
 
-function normalizePublishRow(raw: unknown): PublishLedgerRow | null {
+function normalizePublishRow(raw: unknown): (PublishLedgerRow & { venture_slug: string | null }) | null {
   if (typeof raw !== "object" || raw === null) return null;
   const d = raw as Record<string, unknown>;
-  if (typeof d.calendar_id !== "string" || typeof d.platform !== "string") return null;
+  if (typeof d.calendar_id !== "string" || typeof d.platform !== "string" || typeof d.venture_id !== "string") return null;
   if (typeof d.status !== "string" || !PUBLISH_LEDGER_STATUSES.includes(d.status)) return null;
+  const ventureRaw = Array.isArray(d.venture) ? d.venture[0] : d.venture;
+  const v = (typeof ventureRaw === "object" && ventureRaw !== null ? ventureRaw : {}) as Record<string, unknown>;
   return {
     calendar_id: d.calendar_id,
+    venture_id: d.venture_id,
+    venture_name: typeof v.name === "string" ? v.name : undefined,
+    venture_slug: typeof v.slug === "string" ? v.slug : null,
     platform: d.platform,
     status: d.status as PublishLedgerStatus,
     submission_id: typeof d.submission_id === "string" ? d.submission_id : null,
@@ -977,15 +1039,24 @@ function normalizePublishRow(raw: unknown): PublishLedgerRow | null {
   };
 }
 
+function calendarErrorMessage(message: string, code: string | undefined): string {
+  // Migration 009 added the image-post columns; a bot deployed ahead of it
+  // fails here by name.
+  if (/captions|content_item/i.test(message)) {
+    return `content_calendar is missing the migration-008 columns (${message}) — run supabase/migrations/${MIGRATION_009}. Nothing was published by this step.`;
+  }
+  return tableErrorMessage(message, code, "content_calendar", MIGRATION_007);
+}
+
 // Terminal failure before any claim exists (platform not configured, id
 // missing): insert the failed row directly. First-write-wins like the other
 // ledgers — a unique conflict means another run already recorded this pair.
-async function recordPublishFailure(calendarId: string, platform: string, reason: string): Promise<void> {
+async function recordPublishFailure(calendarId: string, ventureId: string, platform: string, reason: string): Promise<void> {
   const { error } = await getSupabase()
     .from("social_publishes")
-    .insert({ calendar_id: calendarId, platform, status: "failed", error: reason });
+    .insert({ calendar_id: calendarId, venture_id: ventureId, platform, status: "failed", error: reason });
   if (error && error.code !== UNIQUE_VIOLATION) {
-    throw new Error(tableErrorMessage(error.message, error.code, "social_publishes", MIGRATION_007));
+    throw new Error(tableErrorMessage(error.message, error.code, "social_publishes", MIGRATION_009));
   }
 }
 
@@ -994,6 +1065,7 @@ async function recordPublishFailure(calendarId: string, platform: string, reason
 // loud, same discipline as the delivery ledger.
 async function finalizePublishRow(
   calendarId: string,
+  ventureId: string,
   platform: string,
   fromStatus: "publishing" | "submitted",
   patch: Record<string, unknown>,
@@ -1002,11 +1074,12 @@ async function finalizePublishRow(
     .from("social_publishes")
     .update(patch)
     .eq("calendar_id", calendarId)
+    .eq("venture_id", ventureId)
     .eq("platform", platform)
     .eq("status", fromStatus);
   if (error) {
     const detail =
-      `recording '${String(patch.status)}' for ${calendarId}/${platform} failed: ${error.message}. ` +
+      `recording '${String(patch.status)}' for ${calendarId}/${ventureId}/${platform} failed: ${error.message}. ` +
       `The row remains '${fromStatus}' — do NOT delete it.`;
     console.error(`[poller] CRITICAL: ${detail}`);
     return detail;
@@ -1014,20 +1087,92 @@ async function finalizePublishRow(
   return null;
 }
 
-// Roll the per-platform ledger up into the post's aggregate status, and —
-// when this cycle actually changed an outcome — post the venture-channel
-// summary with EVERY platform's current outcome (a partial failure must
-// show the successes alongside). A post with dry-run rows stays
-// 'publishing' on purpose: delete those rows once the real key exists and
-// the next cycle re-arms the real publish.
+// The publish plan of a post: its (venture, platform) targets — the post's
+// own venture plus every venture_cross_publish target for its content type,
+// each over the post's platforms, resolved through THAT venture's
+// venture_platforms rows only (content-publish.ts). One batch of queries
+// per cycle for all rows.
+async function loadPublishPlans(rows: CalendarRow[]): Promise<Map<string, PublishTargetSpec[]>> {
+  const supabase = getSupabase();
+  const plans = new Map<string, PublishTargetSpec[]>();
+  if (rows.length === 0) return plans;
+
+  const sourceSlugs = [...new Set(rows.map((r) => r.venture!.slug))];
+  const { data: xData, error: xError } = await supabase
+    .from("venture_cross_publish")
+    .select("source_slug, target_slug, content_type")
+    .in("source_slug", sourceSlugs);
+  if (xError) throw new Error(tableErrorMessage(xError.message, xError.code, "venture_cross_publish", MIGRATION_009));
+  const crossRows = (xData ?? []).map((r) => r as { source_slug: string; target_slug: string; content_type: string });
+
+  const slugs = new Set<string>(sourceSlugs);
+  for (const r of crossRows) slugs.add(r.target_slug);
+  const { data: vData, error: vError } = await supabase.from("ventures").select("id, slug, name").in("slug", [...slugs]);
+  if (vError) throw new Error(`ventures query failed: ${vError.message}`);
+  const ventures = new Map((vData ?? []).map((r) => r as TargetVenture).map((v) => [v.slug, v]));
+
+  const ventureIds = [...ventures.values()].map((v) => v.id);
+  const { data: vpData, error: vpError } = await supabase
+    .from("venture_platforms")
+    .select("venture_id, platform, blotato_account_id, blotato_page_id, youtube_privacy, enabled")
+    .in("venture_id", ventureIds);
+  if (vpError) throw new Error(tableErrorMessage(vpError.message, vpError.code, "venture_platforms", MIGRATION_007));
+  const stacks: StackRow[] = (vpData ?? []).flatMap((raw) => {
+    const d = raw as Record<string, unknown>;
+    return typeof d.venture_id === "string" && typeof d.platform === "string"
+      ? [
+          {
+            ventureId: d.venture_id,
+            platform: d.platform,
+            accountId: typeof d.blotato_account_id === "string" ? d.blotato_account_id : null,
+            pageId: typeof d.blotato_page_id === "string" ? d.blotato_page_id : null,
+            youtubePrivacy: typeof d.youtube_privacy === "string" ? d.youtube_privacy : null,
+            enabled: d.enabled === true,
+          },
+        ]
+      : [];
+  });
+
+  for (const row of rows) {
+    const venture = row.venture!;
+    const contentType = row.thread?.contentType ?? (row.kind === "image" ? "meme" : "text");
+    const crossTargets = crossRows
+      .filter((x) => x.source_slug === venture.slug && x.content_type === contentType)
+      .map((x) => ventures.get(x.target_slug))
+      .filter((v): v is TargetVenture => v !== undefined);
+    plans.set(
+      row.id,
+      expandPublishTargets({
+        source: { id: row.venture_id, slug: venture.slug, name: venture.name },
+        crossTargets,
+        platforms: row.platforms,
+        stacks,
+        captions: row.captions,
+        body: row.body,
+      }),
+    );
+  }
+  return plans;
+}
+
+// Roll the per-target ledger up into the post's aggregate status (and the
+// content item's, when the post has one), and — when this cycle actually
+// changed an outcome — post the summary with EVERY target's current outcome
+// (a partial failure must show the successes alongside). An image post's
+// summary goes into its Slack thread; a text post's into the venture
+// channel. A post with dry-run rows stays 'publishing' on purpose: delete
+// those rows once the real key exists and the next cycle re-arms the real
+// publish.
 async function settleCalendarRow(
   row: CalendarRow,
+  targets: PublishTargetSpec[],
   rowLedger: Map<string, PublishLedgerRow>,
   changedThisCycle: boolean,
   channels: () => Promise<Map<string, SlackChannel>>,
 ): Promise<void> {
   const venture = row.venture!;
-  const agg = aggregateCalendar(row.platforms, rowLedger);
+  const keys = targets.map((t) => ledgerKey(t.ventureId, t.platform));
+  const agg = aggregateCalendar(keys, rowLedger);
   if (agg.complete && agg.status !== null) {
     const { error } = await getSupabase()
       .from("content_calendar")
@@ -1039,32 +1184,43 @@ async function settleCalendarRow(
     } else {
       console.log(`[poller] post ${row.id} (${venture.slug}) settled as ${agg.status}`);
     }
+    if (row.content_item_id) {
+      const { error: itemError } = await getSupabase()
+        .from("content_items")
+        .update({ status: agg.status, updated_at: new Date().toISOString() })
+        .eq("id", row.content_item_id)
+        .eq("status", "proposed");
+      if (itemError) console.error(`[poller] could not mirror status '${agg.status}' onto content item ${row.content_item_id}: ${itemError.message}`);
+    }
   }
 
   if (!changedThisCycle) return;
-  const outcomes = row.platforms
-    .map((p) => rowLedger.get(p))
-    .filter((r): r is PublishLedgerRow => r !== undefined)
-    .map(outcomeFromRow)
+  const outcomes = targets
+    .map((t) => {
+      const r = rowLedger.get(ledgerKey(t.ventureId, t.platform));
+      return r ? outcomeFromRow({ ...r, venture_name: r.venture_name ?? t.ventureName }) : null;
+    })
     .filter((o): o is NonNullable<ReturnType<typeof outcomeFromRow>> => o !== null);
   if (outcomes.length === 0) return;
-  const resolved = resolveChannel(await channels(), venture.slug);
-  if ("failure" in resolved) {
-    logOnce(
-      `publish-summary:${row.id}`,
-      `[poller] publish summary for post ${row.id} could not be posted: ${resolved.failure}`,
-      true,
-    );
-    return;
-  }
   const message = buildPublishSummary({
     ventureName: venture.name,
     postText: row.body,
     outcomes,
     publishedAt: new Date(),
   });
+  let destination: { channel: string; threadTs?: string };
+  if (row.thread) {
+    destination = { channel: row.thread.channelId, threadTs: row.thread.threadTs };
+  } else {
+    const resolved = resolveChannel(await channels(), venture.slug);
+    if ("failure" in resolved) {
+      logOnce(`publish-summary:${row.id}`, `[poller] publish summary for post ${row.id} could not be posted: ${resolved.failure}`, true);
+      return;
+    }
+    destination = { channel: resolved.channel.id };
+  }
   try {
-    await postMessage({ channel: resolved.channel.id, text: message.text, blocks: message.blocks });
+    await postMessage({ ...destination, text: message.text, blocks: message.blocks });
   } catch (err) {
     logOnce(
       `publish-summary:${row.id}`,
@@ -1078,14 +1234,15 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
   const supabase = getSupabase();
 
   // Rejected sweep: a rejected proposal never runs apply_proposal, so its
-  // calendar row would sit 'proposed' forever — the bot owns that flip.
+  // calendar row would sit 'proposed' forever — the bot owns that flip (and
+  // mirrors it onto the content item, if any).
   const { data: sweepData, error: sweepError } = await supabase
     .from("content_calendar")
-    .select("id, proposal:proposals!content_calendar_proposal_id_fkey(status)")
+    .select("id, content_item_id, proposal:proposals!content_calendar_proposal_id_fkey(status)")
     .eq("status", "proposed")
     .limit(DISARM_SCAN_LIMIT);
   if (sweepError) {
-    throw new Error(tableErrorMessage(sweepError.message, sweepError.code, "content_calendar", MIGRATION_007));
+    throw new Error(calendarErrorMessage(sweepError.message, sweepError.code));
   }
   for (const raw of sweepData ?? []) {
     const d = raw as Record<string, unknown>;
@@ -1100,6 +1257,14 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
       .eq("status", "proposed");
     if (error) console.error(`[poller] could not mark rejected post ${d.id}: ${error.message}`);
     else console.log(`[poller] post ${d.id} marked rejected (its social.post proposal was rejected)`);
+    if (typeof d.content_item_id === "string") {
+      const { error: itemError } = await supabase
+        .from("content_items")
+        .update({ status: "rejected", updated_at: new Date().toISOString() })
+        .eq("id", d.content_item_id)
+        .eq("status", "proposed");
+      if (itemError) console.error(`[poller] could not mark content item ${d.content_item_id} rejected: ${itemError.message}`);
+    }
   }
 
   // The publish work: every approved (or still-settling) post.
@@ -1109,7 +1274,7 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
     .in("status", ["approved", "publishing"])
     .order("created_at", { ascending: true })
     .limit(POLL_LIMIT);
-  if (error) throw new Error(tableErrorMessage(error.message, error.code, "content_calendar", MIGRATION_007));
+  if (error) throw new Error(calendarErrorMessage(error.message, error.code));
   const rows = (data ?? [])
     .map(normalizeCalendar)
     .filter((r): r is CalendarRow => r !== null && r.venture !== null);
@@ -1117,39 +1282,28 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
 
   const { data: ledgerData, error: ledgerError } = await supabase
     .from("social_publishes")
-    .select("calendar_id, platform, status, submission_id, public_url, error")
+    .select(LEDGER_COLS)
     .in(
       "calendar_id",
       rows.map((r) => r.id),
     );
   if (ledgerError) {
-    throw new Error(tableErrorMessage(ledgerError.message, ledgerError.code, "social_publishes", MIGRATION_007));
+    throw new Error(tableErrorMessage(ledgerError.message, ledgerError.code, "social_publishes", MIGRATION_009));
   }
   const ledger = new Map<string, PublishLedgerRow>();
   for (const raw of ledgerData ?? []) {
     const r = normalizePublishRow(raw);
-    if (r) ledger.set(`${r.calendar_id}:${r.platform}`, r);
+    if (r) ledger.set(`${r.calendar_id}:${ledgerKey(r.venture_id, r.platform)}`, r);
   }
 
-  const { data: vpData, error: vpError } = await supabase
-    .from("venture_platforms")
-    .select("venture_id, platform, blotato_account_id, blotato_page_id, youtube_privacy, enabled")
-    .in("venture_id", [...new Set(rows.map((r) => r.venture_id))]);
-  if (vpError) throw new Error(tableErrorMessage(vpError.message, vpError.code, "venture_platforms", MIGRATION_007));
-  const stacks = new Map<string, Record<string, unknown>>();
-  for (const raw of vpData ?? []) {
-    const d = raw as Record<string, unknown>;
-    if (typeof d.venture_id === "string" && typeof d.platform === "string") {
-      stacks.set(`${d.venture_id}:${d.platform}`, d);
-    }
-  }
+  const plans = await loadPublishPlans(rows);
 
-  const dryRun = isDryRun();
   const candidates: PublishCandidate[] = [];
   for (const row of rows) {
     const venture = row.venture!;
+    const targets = plans.get(row.id) ?? [];
 
-    if (row.platforms.length === 0) {
+    if (targets.length === 0) {
       logOnce(row.id, `[poller] PUBLISH FAILED: post ${row.id} (${venture.slug}) has no platforms — marking failed`, true);
       const { error: failErr } = await supabase
         .from("content_calendar")
@@ -1172,27 +1326,50 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
     }
 
     const rowLedger = new Map<string, PublishLedgerRow>();
-    for (const platform of row.platforms) {
-      const existing = ledger.get(`${row.id}:${platform}`);
-      if (existing) rowLedger.set(platform, existing);
+    for (const t of targets) {
+      const key = ledgerKey(t.ventureId, t.platform);
+      const existing = ledger.get(`${row.id}:${key}`);
+      if (existing) rowLedger.set(key, existing);
     }
 
+    // Media is uploaded to Blotato ONCE per target venture per post (with
+    // that venture's key), then shared by its platforms.
+    const hostedMedia = new Map<string, Promise<string[]>>();
+    const mediaFor = (t: PublishTargetSpec): Promise<string[]> => {
+      let pending = hostedMedia.get(t.ventureId);
+      if (!pending) {
+        pending = (async () => {
+          const urls: string[] = [];
+          for (const url of row.media_urls) {
+            const uploaded = await uploadMedia(t.ventureSlug, url);
+            urls.push(uploaded.dryRun ? url : uploaded.url);
+          }
+          return urls;
+        })();
+        hostedMedia.set(t.ventureId, pending);
+      }
+      return pending;
+    };
+
     let changed = false;
-    for (const platform of row.platforms) {
+    for (const t of targets) {
+      const key = ledgerKey(t.ventureId, t.platform);
+      const label = `${row.id}/${t.ventureSlug}/${t.platform}`;
       const candidate: PublishCandidate = {
         calendarId: row.id,
-        platform,
-        ventureSlug: venture.slug,
-        ventureName: venture.name,
+        platform: t.platform,
+        ventureSlug: t.ventureSlug,
+        ventureName: t.ventureName,
+        postVentureSlug: venture.slug,
         status: "publishing-stuck",
       };
-      const existing = rowLedger.get(platform);
+      const existing = rowLedger.get(key);
       if (existing) {
         if (existing.status === "publishing") {
           candidate.detail =
             "claimed but never finalized (bot likely died mid-publish) — check the platform for the post; " +
             "delete the social_publishes row only if it is NOT there";
-          logOnce(`${row.id}:${platform}`, `[poller] NEEDS ATTENTION: publish of ${row.id}/${platform} is ${candidate.detail}`, true);
+          logOnce(key + row.id, `[poller] NEEDS ATTENTION: publish of ${label} is ${candidate.detail}`, true);
         } else if (existing.status === "submitted") {
           candidate.status = "awaiting-confirmation";
           candidate.submissionId = existing.submission_id ?? undefined;
@@ -1202,62 +1379,60 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
         } else if (existing.status === "failed") {
           candidate.status = "previously-failed";
           candidate.detail = existing.error ?? "no reason recorded";
-          logOnce(
-            `${row.id}:${platform}`,
-            `[poller] publish of ${row.id}/${platform} (${venture.slug}) previously failed: ${candidate.detail}`,
-            true,
-          );
+          logOnce(key + row.id, `[poller] publish of ${label} previously failed: ${candidate.detail}`, true);
         } else {
           candidate.status = "pending-real-key";
           candidate.detail = "dry run recorded — delete this social_publishes row once the real key exists to publish for real";
-          logOnce(
-            `${row.id}:${platform}`,
-            `[poller] publish of ${row.id}/${platform} (${venture.slug}) is waiting on the real Blotato key (dry-run row in place)`,
-            false,
-          );
+          logOnce(key + row.id, `[poller] publish of ${label} is waiting on the real Blotato key (dry-run row in place)`, false);
         }
         candidates.push(candidate);
         continue;
       }
 
-      // Per-platform config comes ONLY from the post's own venture — the
-      // venture-isolation guarantee lives in this lookup.
-      const pv = stacks.get(`${row.venture_id}:${platform}`);
+      // Per-target config comes ONLY from the target venture's own rows —
+      // the venture-isolation guarantee lives in this lookup (and in the
+      // per-venture key inside the Blotato client).
+      const dryRun = isDryRun(t.ventureSlug);
+      const supported = supportedPlatform(row.kind, t.platform);
+      const youtubePrivacy = t.stack?.youtubePrivacy ?? null;
+      const sync = `run "sync blotato accounts for ${t.ventureSlug}" in #studio-admin`;
       let refuse: string | null = null;
-      // Text posts go to twitter/linkedin; video posts (kind='video', from
-      // the video_jobs ledger) go to youtube/instagram. The Blotato client
-      // enforces each platform's own requirements at request-build time.
-      const supported = supportedPlatform(row.kind, platform);
-      const youtubePrivacy = pv && typeof pv.youtube_privacy === "string" ? pv.youtube_privacy : null;
-      if (!pv) {
-        refuse = `platform ${platform} has no venture_platforms row for this venture — posts never cross ventures`;
-      } else if (pv.enabled !== true) {
+      if (!t.stack) {
+        refuse = `${t.ventureName} has no venture_platforms row for ${t.platform} — posts never borrow another venture's accounts; ${sync}`;
+      } else if (!t.stack.enabled) {
         refuse =
-          `platform ${platform} is disabled in venture_platforms` +
-          (platform === "instagram" ? " — connect the account in Blotato, set blotato_account_id, then enable it" : "");
+          `${t.platform} is disabled in venture_platforms for ${t.ventureName}` +
+          (t.platform === "instagram" ? ` — connect the account in Blotato, then ${sync}` : "");
       } else if (supported === null) {
         refuse =
           row.kind === "video"
-            ? `video posts publish to youtube/instagram only — not ${platform}`
-            : platform === "youtube" || platform === "instagram"
-              ? `${platform} needs a video — text posts publish to twitter/linkedin; use POST /admin/video-draft`
-              : `platform ${platform} is not yet supported by the Blotato client`;
-      } else if (row.kind === "video" && row.media_urls.length === 0) {
-        refuse = "video post has no media_urls — the video_jobs ledger did not attach the rendered video";
-      } else if (row.kind === "video" && platform === "youtube" && !row.title) {
-        refuse = "youtube needs a title and this video post has none";
-      } else if (row.kind === "video" && platform === "youtube" && !isYoutubePrivacy(youtubePrivacy)) {
-        refuse = "venture_platforms.youtube_privacy must be private, public, or unlisted for this venture";
-      } else if (typeof pv.blotato_account_id !== "string" && !dryRun) {
+            ? `video posts publish to youtube/instagram only — not ${t.platform}`
+            : row.kind === "image"
+              ? `image posts publish to instagram/facebook (or twitter/linkedin) — not ${t.platform}`
+              : t.platform === "youtube" || t.platform === "instagram"
+                ? `${t.platform} needs a video — text posts publish to twitter/linkedin; use POST /admin/video-draft`
+                : `platform ${t.platform} is not yet supported by the Blotato client`;
+      } else if ((row.kind === "video" || row.kind === "image") && row.media_urls.length === 0) {
         refuse =
-          `blotato_account_id is not set for ${platform} — fetch ids via GET /admin/blotato-accounts ` +
-          "(real key required) and assign them in the Supabase SQL editor";
+          row.kind === "video"
+            ? "video post has no media_urls — the video_jobs ledger did not attach the rendered video"
+            : "image post has no media_urls — the content item's public mirror is missing";
+      } else if (row.kind === "video" && t.platform === "youtube" && !row.title) {
+        refuse = "youtube needs a title and this video post has none";
+      } else if (row.kind === "video" && t.platform === "youtube" && !isYoutubePrivacy(youtubePrivacy)) {
+        refuse = `venture_platforms.youtube_privacy must be private, public, or unlisted for ${t.ventureName}`;
+      } else if (!dryRun && t.stack.accountId === null) {
+        refuse = `blotato_account_id is not set for ${t.platform} on ${t.ventureName} — ${sync}`;
+      } else if (!dryRun && supported === "facebook" && t.stack.pageId === null) {
+        refuse = `the Facebook Page id (blotato_page_id) is not set for ${t.ventureName} — ${sync}`;
       }
       if (refuse) {
-        await recordPublishFailure(row.id, platform, refuse);
-        rowLedger.set(platform, {
+        await recordPublishFailure(row.id, t.ventureId, t.platform, refuse);
+        rowLedger.set(key, {
           calendar_id: row.id,
-          platform,
+          venture_id: t.ventureId,
+          venture_name: t.ventureName,
+          platform: t.platform,
           status: "failed",
           submission_id: null,
           public_url: null,
@@ -1266,7 +1441,7 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
         changed = true;
         candidate.status = "failed";
         candidate.detail = refuse;
-        logOnce(`${row.id}:${platform}`, `[poller] PUBLISH FAILED: ${row.id}/${platform} (${venture.slug}): ${refuse}`, true);
+        logOnce(key + row.id, `[poller] PUBLISH FAILED: ${label}: ${refuse}`, true);
         candidates.push(candidate);
         continue;
       }
@@ -1275,27 +1450,29 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
       // not reorder.
       const { error: claimError } = await supabase
         .from("social_publishes")
-        .insert({ calendar_id: row.id, platform, status: "publishing" });
+        .insert({ calendar_id: row.id, venture_id: t.ventureId, platform: t.platform, status: "publishing" });
       if (claimError) {
         if (claimError.code === UNIQUE_VIOLATION) {
           candidate.detail = "another writer claimed this publish between read and claim — not publishing";
-          console.error(`[poller] publish claim conflict on ${row.id}/${platform} (${venture.slug}) — skipped`);
+          console.error(`[poller] publish claim conflict on ${label} — skipped`);
           candidates.push(candidate);
           continue;
         }
-        throw new Error(tableErrorMessage(claimError.message, claimError.code, "social_publishes", MIGRATION_007));
+        throw new Error(tableErrorMessage(claimError.message, claimError.code, "social_publishes", MIGRATION_009));
       }
       changed = true;
 
-      const accountId =
-        typeof pv!.blotato_account_id === "string" ? (pv!.blotato_account_id as string) : DRY_RUN_ACCOUNT_PLACEHOLDER;
+      const stack = t.stack!;
       try {
+        const mediaUrls = await mediaFor(t);
         const request = buildPublishRequest({
           platform: supported!,
-          accountId,
-          text: row.body,
-          mediaUrls: row.media_urls,
-          linkedinPageId: typeof pv!.blotato_page_id === "string" ? (pv!.blotato_page_id as string) : undefined,
+          accountId: stack.accountId ?? DRY_RUN_ACCOUNT_PLACEHOLDER,
+          text: t.caption,
+          mediaUrls,
+          linkedinPageId: supported === "linkedin" && stack.pageId !== null ? stack.pageId : undefined,
+          facebookPageId: supported === "facebook" ? (stack.pageId ?? DRY_RUN_PAGE_PLACEHOLDER) : undefined,
+          instagramMediaType: supported === "instagram" ? (row.kind === "video" ? "reel" : "image") : undefined,
           ...(supported === "youtube" && row.title && isYoutubePrivacy(youtubePrivacy)
             ? {
                 youtube: {
@@ -1308,28 +1485,32 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
               }
             : {}),
         });
-        const result = await publishPost(request);
+        const result = await publishPost(t.ventureSlug, request);
         if (result.dryRun) {
-          const critical = await finalizePublishRow(row.id, platform, "publishing", { status: "dry-run" });
-          rowLedger.set(platform, {
+          const critical = await finalizePublishRow(row.id, t.ventureId, t.platform, "publishing", { status: "dry-run" });
+          rowLedger.set(key, {
             calendar_id: row.id,
-            platform,
+            venture_id: t.ventureId,
+            venture_name: t.ventureName,
+            platform: t.platform,
             status: "dry-run",
             submission_id: null,
             public_url: null,
             error: null,
           });
           candidate.status = "dry-run";
-          candidate.detail = critical ?? "request logged, nothing sent (no real key)";
-          console.log(`[poller] dry-run publish recorded for ${row.id}/${platform} (${venture.slug})`);
+          candidate.detail = critical ?? `request logged, nothing sent (${dryRunReason(t.ventureSlug)})`;
+          console.log(`[poller] dry-run publish recorded for ${label}`);
         } else {
-          const critical = await finalizePublishRow(row.id, platform, "publishing", {
+          const critical = await finalizePublishRow(row.id, t.ventureId, t.platform, "publishing", {
             status: "submitted",
             submission_id: result.postSubmissionId,
           });
-          rowLedger.set(platform, {
+          rowLedger.set(key, {
             calendar_id: row.id,
-            platform,
+            venture_id: t.ventureId,
+            venture_name: t.ventureName,
+            platform: t.platform,
             status: "submitted",
             submission_id: result.postSubmissionId,
             public_url: null,
@@ -1338,23 +1519,24 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
           candidate.status = "submitted";
           candidate.submissionId = result.postSubmissionId;
           if (critical) candidate.detail = critical;
-          console.log(
-            `[poller] submitted ${row.id}/${platform} (${venture.slug}) to Blotato (submission ${result.postSubmissionId})`,
-          );
+          console.log(`[poller] submitted ${label} to Blotato (submission ${result.postSubmissionId})`);
         }
         state.lastPublishActivityAt = new Date().toISOString();
       } catch (err) {
         // Terminal, per Blotato's own "do not retry on failed" — fix the
-        // cause, delete the row, the next cycle re-arms.
+        // cause, delete the row, the next cycle re-arms. Every other target
+        // is attempted independently.
         const reason = err instanceof Error ? err.message : String(err);
         candidate.status = "failed";
         candidate.detail = reason;
-        console.error(`[poller] PUBLISH FAILED: ${row.id}/${platform} (${venture.slug}): ${reason}`);
-        const critical = await finalizePublishRow(row.id, platform, "publishing", { status: "failed", error: reason });
+        console.error(`[poller] PUBLISH FAILED: ${label}: ${reason}`);
+        const critical = await finalizePublishRow(row.id, t.ventureId, t.platform, "publishing", { status: "failed", error: reason });
         if (!critical) {
-          rowLedger.set(platform, {
+          rowLedger.set(key, {
             calendar_id: row.id,
-            platform,
+            venture_id: t.ventureId,
+            venture_name: t.ventureName,
+            platform: t.platform,
             status: "failed",
             submission_id: null,
             public_url: null,
@@ -1366,7 +1548,7 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
       candidates.push(candidate);
     }
 
-    await settleCalendarRow(row, rowLedger, changed, channels);
+    await settleCalendarRow(row, targets, rowLedger, changed, channels);
   }
   return candidates;
 }
@@ -1377,20 +1559,20 @@ async function runStatusPollStep(channels: () => Promise<Map<string, SlackChanne
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("social_publishes")
-    .select("calendar_id, platform, status, submission_id, public_url, error")
+    .select(LEDGER_COLS)
     .eq("status", "submitted")
     .limit(POLL_LIMIT); // well under Blotato's 60 req/min on this endpoint
-  if (error) throw new Error(tableErrorMessage(error.message, error.code, "social_publishes", MIGRATION_007));
+  if (error) throw new Error(tableErrorMessage(error.message, error.code, "social_publishes", MIGRATION_009));
   const submitted = (data ?? [])
     .map(normalizePublishRow)
-    .filter((r): r is PublishLedgerRow => r !== null && r.submission_id !== null);
+    .filter((r): r is NonNullable<ReturnType<typeof normalizePublishRow>> => r !== null && r.submission_id !== null);
   if (submitted.length === 0) return [];
 
   const { data: calData, error: calError } = await supabase
     .from("content_calendar")
     .select(CALENDAR_COLS)
     .in("id", [...new Set(submitted.map((r) => r.calendar_id))]);
-  if (calError) throw new Error(tableErrorMessage(calError.message, calError.code, "content_calendar", MIGRATION_007));
+  if (calError) throw new Error(calendarErrorMessage(calError.message, calError.code));
   const calendars = new Map(
     (calData ?? [])
       .map(normalizeCalendar)
@@ -1398,39 +1580,37 @@ async function runStatusPollStep(channels: () => Promise<Map<string, SlackChanne
       .map((r) => [r.id, r]),
   );
 
-  const candidateFor = (r: PublishLedgerRow): PublishCandidate => ({
+  const candidateFor = (r: NonNullable<ReturnType<typeof normalizePublishRow>>): PublishCandidate => ({
     calendarId: r.calendar_id,
     platform: r.platform,
-    ventureSlug: calendars.get(r.calendar_id)?.venture?.slug ?? "?",
-    ventureName: calendars.get(r.calendar_id)?.venture?.name ?? "?",
+    ventureSlug: r.venture_slug ?? "?",
+    ventureName: r.venture_name ?? "?",
+    postVentureSlug: calendars.get(r.calendar_id)?.venture?.slug ?? "?",
     status: "awaiting-confirmation",
     submissionId: r.submission_id ?? undefined,
   });
-
-  // 'submitted' rows only ever come from real publishes; if the key has
-  // since been removed or reset to the placeholder, say so instead of
-  // failing the whole step every cycle.
-  if (isDryRun()) {
-    logOnce(
-      "status-poll",
-      "[poller] submitted publishes exist but BLOTATO_API_KEY is not a real key — outcomes cannot be confirmed until it returns",
-      true,
-    );
-    return submitted.map((r) => {
-      const c = candidateFor(r);
-      c.detail = "cannot confirm: BLOTATO_API_KEY is not a real key";
-      return c;
-    });
-  }
 
   const candidates: PublishCandidate[] = [];
   const changedCalendars = new Set<string>();
   for (const r of submitted) {
     const candidate = candidateFor(r);
+    // 'submitted' rows only ever come from real publishes; if that venture's
+    // key has since been removed or reset to the placeholder, say so instead
+    // of failing the whole step every cycle.
+    if (r.venture_slug === null || isDryRun(r.venture_slug)) {
+      candidate.detail = `cannot confirm: no real Blotato key for ${r.venture_slug ?? "this venture"} right now`;
+      logOnce(
+        `status-poll:${r.venture_slug ?? r.venture_id}`,
+        `[poller] submitted publishes exist for ${r.venture_slug ?? r.venture_id} but its Blotato key is not real — outcomes cannot be confirmed until it returns`,
+        true,
+      );
+      candidates.push(candidate);
+      continue;
+    }
     try {
-      const status = await getPostStatus(r.submission_id!);
+      const status = await getPostStatus(r.venture_slug, r.submission_id!);
       if (status.status === "published") {
-        const critical = await finalizePublishRow(r.calendar_id, r.platform, "submitted", {
+        const critical = await finalizePublishRow(r.calendar_id, r.venture_id, r.platform, "submitted", {
           status: "published",
           public_url: status.publicUrl ?? null,
         });
@@ -1439,10 +1619,10 @@ async function runStatusPollStep(channels: () => Promise<Map<string, SlackChanne
         if (critical) candidate.detail = critical;
         else changedCalendars.add(r.calendar_id);
         state.lastPublishActivityAt = new Date().toISOString();
-        console.log(`[poller] publish confirmed: ${r.calendar_id}/${r.platform} → ${status.publicUrl ?? "(no url)"}`);
+        console.log(`[poller] publish confirmed: ${r.calendar_id}/${r.venture_slug}/${r.platform} → ${status.publicUrl ?? "(no url)"}`);
       } else if (status.status === "failed") {
         const reason = status.errorMessage ?? "Blotato reported failed (no reason given)";
-        const critical = await finalizePublishRow(r.calendar_id, r.platform, "submitted", {
+        const critical = await finalizePublishRow(r.calendar_id, r.venture_id, r.platform, "submitted", {
           status: "failed",
           error: reason,
         });
@@ -1450,7 +1630,7 @@ async function runStatusPollStep(channels: () => Promise<Map<string, SlackChanne
         candidate.detail = reason;
         if (critical) candidate.detail = `${reason}; ${critical}`;
         else changedCalendars.add(r.calendar_id);
-        console.error(`[poller] PUBLISH FAILED at Blotato: ${r.calendar_id}/${r.platform}: ${reason}`);
+        console.error(`[poller] PUBLISH FAILED at Blotato: ${r.calendar_id}/${r.venture_slug}/${r.platform}: ${reason}`);
       } else {
         candidate.detail = `Blotato reports ${status.status} — will check again next cycle`;
       }
@@ -1459,30 +1639,29 @@ async function runStatusPollStep(channels: () => Promise<Map<string, SlackChanne
       // publish.
       const message = err instanceof Error ? err.message : String(err);
       candidate.detail = `status check failed: ${message} — will retry next cycle`;
-      logOnce(`status:${r.submission_id}`, `[poller] status check for ${r.calendar_id}/${r.platform} failed: ${message}`, true);
+      logOnce(`status:${r.submission_id}`, `[poller] status check for ${r.calendar_id}/${r.venture_slug}/${r.platform} failed: ${message}`, true);
     }
     candidates.push(candidate);
   }
 
   // Confirmed or failed outcomes may have settled their posts: aggregate and
   // post the final summary for each affected post.
-  for (const calId of changedCalendars) {
-    const cal = calendars.get(calId);
-    if (!cal) continue;
-    const { data: rowData, error: rowError } = await supabase
-      .from("social_publishes")
-      .select("calendar_id, platform, status, submission_id, public_url, error")
-      .eq("calendar_id", calId);
-    if (rowError) {
-      console.error(`[poller] could not reload the publish ledger for ${calId}: ${rowError.message}`);
-      continue;
+  if (changedCalendars.size > 0) {
+    const affected = [...changedCalendars].map((id) => calendars.get(id)).filter((c): c is CalendarRow => c !== undefined);
+    const plans = await loadPublishPlans(affected);
+    for (const cal of affected) {
+      const { data: rowData, error: rowError } = await supabase.from("social_publishes").select(LEDGER_COLS).eq("calendar_id", cal.id);
+      if (rowError) {
+        console.error(`[poller] could not reload the publish ledger for ${cal.id}: ${rowError.message}`);
+        continue;
+      }
+      const rowLedger = new Map<string, PublishLedgerRow>();
+      for (const raw of rowData ?? []) {
+        const r = normalizePublishRow(raw);
+        if (r) rowLedger.set(ledgerKey(r.venture_id, r.platform), r);
+      }
+      await settleCalendarRow(cal, plans.get(cal.id) ?? [], rowLedger, true, channels);
     }
-    const rowLedger = new Map<string, PublishLedgerRow>();
-    for (const raw of rowData ?? []) {
-      const r = normalizePublishRow(raw);
-      if (r) rowLedger.set(r.platform, r);
-    }
-    await settleCalendarRow(cal, rowLedger, true, channels);
   }
   return candidates;
 }
