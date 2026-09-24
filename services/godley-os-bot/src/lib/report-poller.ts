@@ -64,6 +64,7 @@ import { buildPublishSummary } from "./social-blocks.js";
 import { aggregateCalendar, outcomeFromRow, type PublishLedgerRow, type PublishLedgerStatus } from "./social-publish.js";
 import { getSupabase } from "./supabase.js";
 import { listChannelsByName, postMessage, updateMessage, type SlackChannel } from "./slack-web.js";
+import { runVideoStep, type VideoCandidate } from "./video-jobs.js";
 import { buildWhatsAppDelivery } from "./whatsapp-blocks.js";
 
 const POLL_INTERVAL_MS = 60 * 1000;
@@ -162,6 +163,8 @@ export interface PollerState {
   lastPrompts: PromptCandidate[];
   lastFramings: FramingCandidate[];
   lastPublishes: PublishCandidate[];
+  lastVideos: VideoCandidate[];
+  lastVideoActivityAt: string | null;
 }
 
 const state: PollerState = {
@@ -178,6 +181,8 @@ const state: PollerState = {
   lastPrompts: [],
   lastFramings: [],
   lastPublishes: [],
+  lastVideos: [],
+  lastVideoActivityAt: null,
 };
 
 export function getPollerState(): PollerState {
@@ -186,6 +191,7 @@ export function getPollerState(): PollerState {
     lastDeliveries: [...state.lastDeliveries],
     lastPrompts: [...state.lastPrompts],
     lastFramings: [...state.lastFramings],
+    lastVideos: [...state.lastVideos],
     lastPublishes: [...state.lastPublishes],
   };
 }
@@ -903,12 +909,14 @@ const MIGRATION_007 = "007_social_publishing.sql";
 // this placeholder so the gap is visible, not hidden.
 const DRY_RUN_ACCOUNT_PLACEHOLDER = "account-id-not-set";
 
-const CALENDAR_COLS = "id, venture_id, body, media_urls, platforms, status, venture:ventures(name, slug)";
+const CALENDAR_COLS = "id, venture_id, kind, title, body, media_urls, platforms, status, venture:ventures(name, slug)";
 
 interface CalendarRow {
   id: string;
   venture_id: string;
   body: string;
+  kind: "text" | "video";
+  title: string | null;
   media_urls: string[];
   platforms: string[];
   status: string;
@@ -932,6 +940,8 @@ function normalizeCalendar(raw: unknown): CalendarRow | null {
     id: row.id,
     venture_id: row.venture_id,
     body: row.body,
+    kind: row.kind === "video" ? "video" : "text",
+    title: typeof row.title === "string" && row.title.trim() ? row.title : null,
     media_urls: Array.isArray(row.media_urls) ? row.media_urls.filter((u): u is string => typeof u === "string") : [],
     platforms: row.platforms.filter((p): p is string => typeof p === "string"),
     status: typeof row.status === "string" ? row.status : "unknown",
@@ -940,6 +950,17 @@ function normalizeCalendar(raw: unknown): CalendarRow | null {
 }
 
 const PUBLISH_LEDGER_STATUSES: readonly string[] = ["publishing", "submitted", "published", "failed", "dry-run"];
+
+type YoutubePrivacy = "private" | "public" | "unlisted";
+function isYoutubePrivacy(value: string | null): value is YoutubePrivacy {
+  return value === "private" || value === "public" || value === "unlisted";
+}
+
+// Which Blotato targets a post of this kind may publish to.
+function supportedPlatform(kind: "text" | "video", platform: string): "twitter" | "linkedin" | "youtube" | "instagram" | null {
+  if (kind === "video") return platform === "youtube" || platform === "instagram" ? platform : null;
+  return platform === "twitter" || platform === "linkedin" ? platform : null;
+}
 
 function normalizePublishRow(raw: unknown): PublishLedgerRow | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -1203,18 +1224,30 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
       // venture-isolation guarantee lives in this lookup.
       const pv = stacks.get(`${row.venture_id}:${platform}`);
       let refuse: string | null = null;
-      // The client publishes text posts to these two this phase; youtube
-      // (video + per-post title) comes with the video phase.
-      const supported = platform === "twitter" || platform === "linkedin" ? platform : null;
+      // Text posts go to twitter/linkedin; video posts (kind='video', from
+      // the video_jobs ledger) go to youtube/instagram. The Blotato client
+      // enforces each platform's own requirements at request-build time.
+      const supported = supportedPlatform(row.kind, platform);
+      const youtubePrivacy = pv && typeof pv.youtube_privacy === "string" ? pv.youtube_privacy : null;
       if (!pv) {
         refuse = `platform ${platform} has no venture_platforms row for this venture — posts never cross ventures`;
       } else if (pv.enabled !== true) {
-        refuse = `platform ${platform} is disabled in venture_platforms`;
+        refuse =
+          `platform ${platform} is disabled in venture_platforms` +
+          (platform === "instagram" ? " — connect the account in Blotato, set blotato_account_id, then enable it" : "");
       } else if (supported === null) {
         refuse =
-          platform === "youtube"
-            ? "youtube needs a per-post video and title — video posts land in a later phase"
-            : `platform ${platform} is not yet supported by the Blotato client (twitter/linkedin only this phase)`;
+          row.kind === "video"
+            ? `video posts publish to youtube/instagram only — not ${platform}`
+            : platform === "youtube" || platform === "instagram"
+              ? `${platform} needs a video — text posts publish to twitter/linkedin; use POST /admin/video-draft`
+              : `platform ${platform} is not yet supported by the Blotato client`;
+      } else if (row.kind === "video" && row.media_urls.length === 0) {
+        refuse = "video post has no media_urls — the video_jobs ledger did not attach the rendered video";
+      } else if (row.kind === "video" && platform === "youtube" && !row.title) {
+        refuse = "youtube needs a title and this video post has none";
+      } else if (row.kind === "video" && platform === "youtube" && !isYoutubePrivacy(youtubePrivacy)) {
+        refuse = "venture_platforms.youtube_privacy must be private, public, or unlisted for this venture";
       } else if (typeof pv.blotato_account_id !== "string" && !dryRun) {
         refuse =
           `blotato_account_id is not set for ${platform} — fetch ids via GET /admin/blotato-accounts ` +
@@ -1263,6 +1296,17 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
           text: row.body,
           mediaUrls: row.media_urls,
           linkedinPageId: typeof pv!.blotato_page_id === "string" ? (pv!.blotato_page_id as string) : undefined,
+          ...(supported === "youtube" && row.title && isYoutubePrivacy(youtubePrivacy)
+            ? {
+                youtube: {
+                  title: row.title,
+                  privacyStatus: youtubePrivacy,
+                  // Subscribers hear about public uploads only; private and
+                  // unlisted ones are the owner's to share.
+                  shouldNotifySubscribers: youtubePrivacy === "public",
+                },
+              }
+            : {}),
         });
         const result = await publishPost(request);
         if (result.dryRun) {
@@ -1487,6 +1531,14 @@ export async function runPollCycle(): Promise<CycleResult> {
       stepErrors.push(`disarm: ${errorText(err)}`);
     }
     state.lastPrompts = [...prompts, ...disarmed];
+    try {
+      state.lastVideos = await runVideoStep();
+      if (state.lastVideos.some((v) => v.status === "narrated" || v.status === "assembled" || v.status === "assembling")) {
+        state.lastVideoActivityAt = startedAt;
+      }
+    } catch (err) {
+      stepErrors.push(`video: ${errorText(err)}`);
+    }
     let published: PublishCandidate[] = [];
     try {
       published = await runPublishStep(channels);
@@ -1534,7 +1586,7 @@ export function startReportPoller(): void {
   state.intervalRunning = true;
   console.log(
     `[poller] started (every ${POLL_INTERVAL_MS / 1000}s: deliveries, WhatsApp framing, approval prompts, disarm, ` +
-      "social publish, publish confirm)",
+      "video jobs, social publish, publish confirm)",
   );
   const tick = () => {
     runPollCycle().catch((err) => {

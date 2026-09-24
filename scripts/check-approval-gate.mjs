@@ -113,6 +113,8 @@ const FETCH_ALLOWLIST = new Set([
   `${BOT_SRC}/integrations/openai.ts`, // framing — output becomes a NEW pending proposal
   `${BOT_SRC}/integrations/anthropic.ts`, // AI Manager model calls — its acts run only through decisions.ts after a "yes"
   `${BOT_SRC}/integrations/openrouter.ts`, // the shared model gateway the two above call by default — same outputs, same gate
+  `${BOT_SRC}/integrations/elevenlabs.ts`, // narration — runs only for an APPROVED video.script; output is a file, never a post
+  `${BOT_SRC}/integrations/pictory.ts`, // video assembly — same; the finished video becomes a NEW pending social.post proposal
   `${BOT_SRC}/lib/slack-web.ts`, // Slack is the workroom, not an external platform
   `${BOT_SRC}/routes/slack-interactions.ts`, // response_url acknowledgement of a decision
 ]);

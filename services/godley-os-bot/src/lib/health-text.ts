@@ -27,7 +27,9 @@ export function buildHealthText(state: PollerState, manager: ManagerStats): stri
     state.lastDeliveries.filter((c) => needsAttention(c.status)).length +
     state.lastPrompts.filter((c) => needsAttention(c.status)).length +
     state.lastFramings.filter((c) => needsAttention(c.status)).length +
-    state.lastPublishes.filter((c) => needsAttention(c.status)).length;
+    state.lastPublishes.filter((c) => needsAttention(c.status)).length +
+    state.lastVideos.filter((v) => v.status === "failed" || v.status === "previously-failed").length;
+  const videosInFlight = state.lastVideos.filter((v) => v.status === "assembling" || v.status === "narrated").length;
   const awaiting = state.lastPrompts.filter(
     (c) => c.status === "posted" || c.status === "already-posted",
   ).length;
@@ -45,7 +47,8 @@ export function buildHealthText(state: PollerState, manager: ManagerStats): stri
     `godley-os-bot v${BOT_VERSION} · poller: ${poller} · last successful check: ${lastOk} · ` +
     `approvals awaiting decision in Slack: ${awaiting} · last buttons post: ${lastPrompt} · ` +
     `last report delivered: ${lastDelivered} · last WhatsApp framing: ${lastFramed} · ` +
-    `last publish activity: ${lastPublish} · publishes waiting on the real Blotato key: ${waitingOnKey} · ` +
+    `last publish activity: ${lastPublish} · videos in production: ${videosInFlight} · ` +
+    `publishes waiting on the real Blotato key: ${waitingOnKey} · ` +
     `publishes pending confirmation: ${pendingConfirm} · needs attention: ${attention} · ` +
     `manager: ${manager.messagesHandled} message(s) handled · ` +
     `pending confirmations: ${manager.pendingActions} · last model call: ${lastModel}.${failure}`

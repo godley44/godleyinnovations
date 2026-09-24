@@ -126,6 +126,10 @@ guard script so it can't happen twice.
   005), so approval works from the channel as well as the app. Approved
   briefs are also reframed once (OpenAI, `framing_jobs`, migration 006)
   into a `whatsapp.message` proposal — approved the same way, then handed
-  over in Slack as copy-paste text; nothing auto-sends to WhatsApp.
+  over in Slack as copy-paste text; nothing auto-sends to WhatsApp. Approved
+  text can also become a narrated video (migration 008: `video.script`
+  approval → ElevenLabs cloned voice + Pictory assembly in the bot's
+  `video_jobs` ledger → a `social.post` approval with a preview link →
+  YouTube/Instagram via Blotato); see the bot README.
 - `docs/lil-bull-interactive-spec.md` — staged spec for the Slack-phase
   interactive features (not built yet).
