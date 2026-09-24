@@ -12,6 +12,8 @@
 //  fileSocialDraft for drafts. No new approval logic. Stops on the first
 //  failure; the rest are reported as not executed.
 
+import { resolveBlotatoKey, ventureKeyName } from "../integrations/blotato.js";
+import { describeSyncResult, syncBlotatoAccounts } from "./blotato-sync.js";
 import { formatUtc } from "./brief-blocks.js";
 import { DECIDER_NAME, disarmDecidedPrompt, recordDecision } from "./decisions.js";
 import { fileSocialDraft } from "./file-social-draft.js";
@@ -145,8 +147,39 @@ async function describeDraft(input: Record<string, unknown>): Promise<ActDescrip
   };
 }
 
+// The account sync: internal configuration (venture_platforms rows) read
+// from Blotato with the venture's OWN key. Confirmed like every other act
+// because it changes where the venture's posts go.
+async function describeSync(input: Record<string, unknown>): Promise<ActDescription> {
+  const slug = typeof input.venture_slug === "string" ? input.venture_slug.trim() : "";
+  if (!slug) return { ok: false, problem: "sync_blotato_accounts needs a venture_slug" };
+  const { data, error } = await getSupabase().from("ventures").select("name").eq("slug", slug).maybeSingle();
+  if (error) return { ok: false, problem: `ventures lookup failed: ${error.message}` };
+  if (!data) return { ok: false, problem: `no venture with slug "${slug}"` };
+  const name = (data as { name?: unknown }).name;
+  const ventureLabel = typeof name === "string" ? name : slug;
+  const keyName = ventureKeyName(slug);
+  if (resolveBlotatoKey(slug).key === null) {
+    return { ok: false, problem: `${keyName} is not in the environment yet (or is the "pending" placeholder) — paste ${ventureLabel}'s Blotato key into Doppler first, then ask again` };
+  }
+  return {
+    ok: true,
+    act: {
+      tool: "sync_blotato_accounts",
+      input: { venture_slug: slug },
+      summary:
+        `Sync Blotato accounts — ${ventureLabel}: read its connected Instagram + Facebook accounts (and the Facebook Page) with ${keyName} ` +
+        "and write their ids into venture_platforms (publishes nothing)",
+    },
+  };
+}
+
 export async function describeAct(tool: ActToolName, input: Record<string, unknown>): Promise<ActDescription> {
   if (tool === "approve_proposal" || tool === "reject_proposal") return describeDecision(tool, input);
+  if (tool === "sync_blotato_accounts") return describeSync(input);
+  if (tool === "file_for_approval") {
+    return { ok: false, problem: "file_for_approval belongs to the venture content agent — drop the image in the venture's channel instead" };
+  }
   return describeDraft(input);
 }
 
@@ -168,6 +201,14 @@ async function executeOne(act: ProposedAct): Promise<string> {
     // table; the Slack buttons message is retired here (PR #5 disarm logic).
     const disarm = await disarmDecidedPrompt(proposalId, MANAGER_VIA);
     return decision === "approve" ? `approved and applied; ${disarm}` : `rejected; ${disarm}`;
+  }
+  if (act.tool === "sync_blotato_accounts") {
+    const result = await syncBlotatoAccounts(act.input.venture_slug as string);
+    if (!result.ok) throw new Error(result.error);
+    return `venture_platforms updated for ${result.venture.name}:\n${describeSyncResult(result)}`;
+  }
+  if (act.tool === "file_for_approval") {
+    throw new Error("file_for_approval is the content agent's act and never runs from #studio-admin");
   }
   const result = await fileSocialDraft(act.input.venture_slug as string, {
     text: act.input.text,

@@ -18,7 +18,15 @@
 
 export const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
 
-export type ActToolName = "approve_proposal" | "reject_proposal" | "create_social_draft";
+// The manager's acts, the manager's account sync, and the content agent's
+// filing act share one store type: every one of them is parked here and
+// runs only after the owner's exact "yes".
+export type ActToolName =
+  | "approve_proposal"
+  | "reject_proposal"
+  | "create_social_draft"
+  | "sync_blotato_accounts"
+  | "file_for_approval";
 
 export interface ProposedAct {
   tool: ActToolName;

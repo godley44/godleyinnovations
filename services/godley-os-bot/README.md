@@ -10,11 +10,12 @@ The research/framing/publishing pipelines are stubs on purpose.
 | Route | What it does |
 | --- | --- |
 | `GET /health` | Returns `200 ok` — Render health check. |
-| `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge and acks everything within Slack's 3-second window. In **#studio-admin**, every human message routes to the **AI Manager** (see below). Anywhere else an `@mention` of the bot is the **health probe**: it replies in-thread (after the ack, fire-and-forget) with the bot version, poller status, timestamps of the last successful delivery check and last delivered report, how many reports need attention, and manager stats. |
+| `POST /slack/events` | Slack Events API. Answers the one-time `url_verification` challenge and acks everything within Slack's 3-second window. In **#studio-admin**, every human message routes to the **AI Manager** (see below). In a **high-touch venture channel** (`ventures.interaction_mode = 'high_touch'`, e.g. #couplestherapy101) every human message — including an image drop (`file_share`) — routes to the **venture content agent** (see below), which always answers in the message's thread. Anywhere else an `@mention` of the bot is the **health probe**: it replies in-thread (after the ack, fire-and-forget) with the bot version, poller status, timestamps of the last successful delivery check and last delivered report, how many reports need attention, and manager/agent stats. |
 | `POST /slack/interactions` | Slack interactivity. Approve/Reject buttons write the decision to Supabase, then replace the original message ("✅ Approved by Justin" / "❌ Rejected by Justin"). A failed write is reported in-channel and nothing is retried silently. |
 | `POST /admin/deliver-now` | Runs one full poll cycle immediately (delivery, framing, prompts, disarm, publish, confirm — with full Slack channel resolution) and returns the result as JSON — for testing without waiting on the Monday cron. Auth: `Authorization: Bearer <ADMIN_SECRET>`; with the secret unset all admin routes refuse everything. |
 | `POST /admin/social-draft` | Files a social post: creates the `content_calendar` row and its `social.post` proposal, which rides the existing approval rails (Slack buttons / app inbox). Drafting never publishes — only approval does. Body: `{ "ventureSlug", "text", "platforms": ["twitter","linkedin"], "mediaUrls"?, "scheduledFor"? }` (`scheduledFor` is informational only this phase). Same bearer auth. |
-| `GET /admin/blotato-accounts` | Lists the Blotato accounts behind the real API key (`GET /v2/users/me/accounts`), for assigning `venture_platforms.blotato_account_id` at live-test time. Refuses with a clear message while the key is the `pending` placeholder. Same bearer auth. |
+| `GET /admin/blotato-accounts?venture=<slug>` | Lists the Blotato accounts (and Facebook/LinkedIn Pages, via the subaccounts endpoint) behind **that venture's** key (`BLOTATO_API_KEY__<SLUG_UPPER_SNAKE>`; `lil-bull` falls back to the legacy `BLOTATO_API_KEY`). Refuses with a clear message while the key is missing or the `pending` placeholder. Same bearer auth. |
+| `POST /admin/blotato-accounts/sync` | Body `{ "ventureSlug" }`. Upserts the venture's Instagram + Facebook `venture_platforms` rows (account id, Facebook Page id) from that listing — the phone-only replacement for the SQL editor, shared with the manager's `sync blotato accounts for <slug>`. Internal configuration; publishes nothing. Same bearer auth. |
 | `POST /admin/notify` | Posts one line to **#studio-admin** (the owner's console). Body: `{ "text", "level"?: "info" \| "error" }` — `info` is prefixed 🚀, `error` 🚨. Used by the `deploy-on-main` GitHub workflow to report every production deploy (what merged, migrations applied, functions deployed, bot version) and every failure. Answers 502 with the reason when the channel is missing or the bot isn't a member. Never touches the database. Same bearer auth. |
 
 Both Slack routes verify the request signature by hand (no Slack SDK): HMAC
@@ -162,6 +163,74 @@ proposal's buttons post in the same cycle. Poller steps are isolated: a
 missing migration fails its own step loudly ("run migration 006") while
 deliveries and approvals keep working.
 
+## The venture content agent (high-touch channels) — CouplesTherapy101 memes
+
+`ventures.interaction_mode` (migration 008) splits venture channels in two:
+`hands_off` keeps the workroom behavior above; `high_touch` sends every owner
+message in the channel — including a dropped image — to the content agent
+(`src/lib/content-agent.ts`), which always answers **in the drop's thread**.
+Full walkthrough and the dry-run E2E steps:
+[`docs/couplestherapy101-meme-mvp.md`](../../docs/couplestherapy101-meme-mvp.md).
+
+- **Owner-only.** `OWNER_SLACK_USER_ID` steers; anyone else gets one
+  read-only line in an agent thread. Owner unset = agent disabled, said out
+  loud (fail closed).
+- **Images in.** `message` events with `subtype: file_share` — image types
+  only. Each file is downloaded with the bot token (needs the `files:read`
+  scope; a 403 or sign-in page becomes a "WHAT JUSTIN DOES: add files:read +
+  reinstall" reply), mirrored to the public Storage bucket `content-media`
+  (`<venture_slug>/<content_item_id>/source.<ext>`, `src/lib/content-media.ts`
+  through the existing supabase-js client), and recorded as a `content_items`
+  row, unique on the Slack file id. Several images in one drop are numbered
+  and the owner picks by number before any model call. Links are out of
+  scope (the reply asks for a screenshot).
+- **The dialogue.** Vision model through the existing provider module
+  (`CONTENT_AGENT_MODEL`, default = the manager's model; OpenRouter by
+  default, Anthropic direct behind `AI_PROVIDER=direct`), system prompt =
+  `ventures.voice_prompt` + the rules in `src/lib/content-agent-prompt.ts`,
+  the thread's `conversations.replies` as memory plus a code-built context
+  card (item status, credit so far, Imgflip availability, targets, whether
+  the KBOS CTA is due). Work tools: `list_meme_templates` (Imgflip
+  `get_memes`, cached 24h) and `render_meme` (Imgflip `caption_image`,
+  preview posted in the thread; unset credentials = reposts only).
+- **Confirm-before-file.** `file_for_approval` is the agent's one ACT tool
+  and NEVER runs off a model response: `describeFiling` validates the input
+  (repost needs a `@handle`; riff needs the template id and an
+  `i.imgflip.com` render url; the KBOS CTA line is required exactly when
+  `(published KBOS posts + 1) % 3 == 0`), builds the package (captions per
+  venture via `composeCaptions`, targets from `venture_cross_publish` +
+  `venture_platforms`) and the agent echoes it — image, both captions,
+  target list — for the owner's exact *yes* (`src/lib/affirmative.ts`, same
+  10-minute in-memory pending action as the manager). `executeFiling` then
+  mirrors a riff's render into Storage and files the `content_calendar` row
+  (kind `image`, captions) + `social.post` proposal through
+  `fileSocialDraft` — the shared filing path. The item goes `open →
+  proposed`; the proposal still needs approval. The agent never publishes.
+- **Approval in the thread.** The poller's prompt step posts the
+  Approve/Reject buttons into the content item's thread (payload
+  `slack_channel_id`/`slack_thread_ts`, honored only in the venture's own
+  channel); the prompt and the app inbox both show the image, every target
+  venture's caption, and the target list.
+
+### Cross-publishing and one key per venture
+
+`venture_cross_publish(source_slug, target_slug, content_type)` says whose
+content also publishes where (seeded CT101 → KBOS for `meme` and
+`note_card`). The publish step expands an approved post into (venture,
+platform) targets — the post's venture plus each cross-publish target, over
+the post's platforms — and resolves EVERY target through that venture's own
+`venture_platforms` row and that venture's own Blotato key
+(`BLOTATO_API_KEY__<SLUG_UPPER_SNAKE>`; the legacy `BLOTATO_API_KEY` serves
+`lil-bull` only, and a venture without a key runs in dry run rather than
+borrow another's). Per target: `POST /v2/media { url }` uploads the image
+with that venture's key (once per venture per post), then `POST /v2/posts`
+with the Blotato-hosted URL — Instagram target `{ targetType }` (media
+required), Facebook target `{ targetType, pageId }` (the Page id from the
+account sync). `social_publishes` is unique per (post, venture, platform);
+targets are attempted independently, never retried; the per-target summary
+goes into the item's thread (or the venture channel for a text post) and
+rolls up into `content_calendar.status` and `content_items.status`.
+
 ## Slack approval loop (pending proposals → buttons)
 
 The sibling flow to report delivery: PENDING proposals are posted to the
@@ -290,8 +359,13 @@ dashboard any more:
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_SECRET`,
 `OPENROUTER_API_KEY` (the one AI account), `AI_PROVIDER` (optional, see
 "One AI account"), `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (direct-provider
-path only), `OWNER_SLACK_USER_ID` (the AI Manager's owner gate — Slack
-profile → "…" → Copy member ID), `BLOTATO_API_KEY`.
+path only), `OWNER_SLACK_USER_ID` (the owner gate for the AI Manager and
+the content agent — Slack profile → "…" → Copy member ID),
+`BLOTATO_API_KEY__COUPLESTHERAPY101` and `BLOTATO_API_KEY__KINGDOM_BUILDING_OS`
+(one Blotato key per venture; `pending`/unset = that venture in dry run),
+`BLOTATO_API_KEY` (the legacy key, `lil-bull` only), `BLOTATO_DRY_RUN`
+(optional), `IMGFLIP_USERNAME` / `IMGFLIP_PASSWORD` (meme riffs; unset =
+reposts only), `CONTENT_AGENT_MODEL` (optional).
 
 ## Local development
 
@@ -348,4 +422,7 @@ No new OAuth scopes for the AI Manager: `channels:history` (required by the
 `message.channels` subscription) also covers `conversations.history` /
 `conversations.replies` (conversation context), and `channels:read`
 (already used for `conversations.list`) covers `conversations.info`
-(channel-name routing).
+(channel-name routing). The **content agent needs one more: `files:read`**
+(OAuth & Permissions → Bot Token Scopes → add → *Reinstall to Workspace*),
+to download the images the owner drops; `message.channels` already delivers
+the `file_share` events.

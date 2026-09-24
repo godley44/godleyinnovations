@@ -37,7 +37,19 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      # Blotato: one key per venture (BLOTATO_API_KEY__<SLUG_UPPER_SNAKE>);
+      # the un-suffixed name is the legacy key lil-bull still falls back to.
       - key: BLOTATO_API_KEY
+        sync: false
+      - key: BLOTATO_API_KEY__COUPLESTHERAPY101
+        sync: false
+      - key: BLOTATO_API_KEY__KINGDOM_BUILDING_OS
+        sync: false
+      # Imgflip credentials for the content agent's meme riffs (optional —
+      # without them the agent offers reposts only).
+      - key: IMGFLIP_USERNAME
+        sync: false
+      - key: IMGFLIP_PASSWORD
         sync: false
       # One AI account: both model clients call OpenRouter with this key by
       # default; ANTHROPIC_API_KEY / OPENAI_API_KEY above are the

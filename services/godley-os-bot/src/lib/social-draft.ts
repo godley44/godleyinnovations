@@ -1,14 +1,20 @@
-// Pure validation + row-building for POST /admin/social-draft — the manual
-// entry point that turns owner input into a content_calendar row plus a
-// 'social.post' proposal riding the existing approval rails. Kept free of
-// I/O so the rules are unit-testable.
+// Pure validation + row-building for filing a social post — the manual
+// entry point (POST /admin/social-draft), the AI Manager's
+// create_social_draft, and the content agent's file_for_approval all turn
+// owner input into a content_calendar row plus a 'social.post' proposal
+// riding the existing approval rails. Kept free of I/O so the rules are
+// unit-testable.
 //
 // Hard rules enforced here, before anything touches the database:
 //  - platforms must be a non-empty subset of the venture's ENABLED stack
 //    (venture_platforms) — posts never cross ventures, and a platform the
-//    venture doesn't have can't be drafted into a post.
+//    venture doesn't have can't be drafted into a post. (Cross-publishing
+//    is a property of the EXECUTOR, resolved through venture_cross_publish
+//    at publish time — the filed row always belongs to the source venture.)
 //  - youtube is refused this phase: it needs a per-post video and title,
-//    and content_calendar only models kind='text' until the video phase.
+//    and the calendar models text and image posts only until the video
+//    phase.
+//  - instagram needs media: its feed has no text-only post.
 //  - media URLs must be http(s) — Blotato fetches media by public URL.
 //  - scheduledFor is accepted but informational ONLY: the approval gate is
 //    the only path to publishing; nothing auto-publishes on a schedule.
@@ -74,6 +80,9 @@ export function validateSocialDraft(body: unknown, stack: VenturePlatformRow[]):
     }
     mediaUrls = b.mediaUrls as string[];
   }
+  if (platforms.includes("instagram") && mediaUrls.length === 0) {
+    return invalid("instagram needs an image or video — its feed has no text-only post; add mediaUrls");
+  }
 
   let scheduledFor: string | null = null;
   if (b.scheduledFor !== undefined && b.scheduledFor !== null && b.scheduledFor !== "") {
@@ -89,20 +98,34 @@ export function validateSocialDraft(body: unknown, stack: VenturePlatformRow[]):
   return { ok: true, draft: { text, platforms, mediaUrls, scheduledFor } };
 }
 
-// The exact proposals row the draft route files — exported for the payload
+export interface SocialProposalRowArgs {
+  ventureId: string;
+  calendarId: string;
+  text: string;
+  platforms: string[];
+  // Who filed it: 'admin' (the route / the manager), 'content-agent' (the
+  // in-thread meme flow). Defaults to 'admin' — the historical value.
+  proposedBy?: string;
+  // Extra payload fields the approval surfaces render (mediaUrls, per-venture
+  // captions, the target list, the Slack thread to answer in…). All
+  // optional so Lil Bull's text posts are byte-for-byte unchanged.
+  extras?: Record<string, unknown>;
+}
+
+// The exact proposals row the filing path writes — exported for the payload
 // shape test. text/platforms ride in the payload so the Slack approval
 // prompt can show exactly what will be published; apply_proposal() reads
 // only calendar_id (the calendar row is the record the approval flips).
-export function socialProposalRow(args: { ventureId: string; calendarId: string; text: string; platforms: string[] }): {
+export function socialProposalRow(args: SocialProposalRowArgs): {
   venture_id: string;
   action: "social.post";
-  proposed_by: "admin";
-  payload: { calendar_id: string; text: string; platforms: string[] };
+  proposed_by: string;
+  payload: { calendar_id: string; text: string; platforms: string[] } & Record<string, unknown>;
 } {
   return {
     venture_id: args.ventureId,
     action: "social.post",
-    proposed_by: "admin",
-    payload: { calendar_id: args.calendarId, text: args.text, platforms: args.platforms },
+    proposed_by: args.proposedBy ?? "admin",
+    payload: { ...(args.extras ?? {}), calendar_id: args.calendarId, text: args.text, platforms: args.platforms },
   };
 }

@@ -168,6 +168,62 @@ export async function postMessage(args: PostMessageArgs): Promise<string> {
   return typeof res.ts === "string" ? res.ts : "";
 }
 
+// A file the owner dropped in a channel, as the message event carries it.
+export interface SlackFileRef {
+  id: string;
+  name: string;
+  mimetype: string;
+  urlPrivateDownload: string | null;
+  size: number | null;
+}
+
+export function normalizeFileRef(raw: unknown): SlackFileRef | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const f = raw as Record<string, unknown>;
+  if (typeof f.id !== "string") return null;
+  const url =
+    typeof f.url_private_download === "string"
+      ? f.url_private_download
+      : typeof f.url_private === "string"
+        ? f.url_private
+        : null;
+  return {
+    id: f.id,
+    name: typeof f.name === "string" && f.name ? f.name : f.id,
+    mimetype: typeof f.mimetype === "string" ? f.mimetype : "",
+    urlPrivateDownload: url,
+    size: typeof f.size === "number" ? f.size : null,
+  };
+}
+
+// Thrown when Slack answers a file download with something other than the
+// file — the one non-transient cause is a token without the files:read
+// scope, which the caller turns into a "WHAT JUSTIN DOES" instruction.
+export class SlackFileScopeError extends Error {
+  constructor(detail: string) {
+    super(`Slack refused the file download (${detail}) — the app needs the files:read scope: add it under OAuth & Permissions and reinstall the app`);
+    this.name = "SlackFileScopeError";
+  }
+}
+
+// Download a private Slack file (url_private_download) with the bot token.
+// Requires the files:read scope: without it Slack answers 403, or a 200 HTML
+// sign-in page — both are reported as SlackFileScopeError, never mistaken
+// for image bytes. The token goes in the Authorization header only.
+export async function downloadFile(url: string): Promise<{ bytes: Uint8Array; contentType: string }> {
+  const token = process.env.SLACK_BOT_TOKEN;
+  if (!token) throw new Error("SLACK_BOT_TOKEN is not set");
+  if (!/^https:\/\/files\.slack\.com\//.test(url) && !/^https:\/\/[a-z0-9-]+\.slack\.com\//.test(url)) {
+    throw new Error("refusing to send the bot token to a non-Slack URL");
+  }
+  const res = await fetch(url, { headers: { authorization: `Bearer ${token}` }, redirect: "follow" });
+  const contentType = res.headers.get("content-type") ?? "";
+  if (res.status === 401 || res.status === 403) throw new SlackFileScopeError(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Slack file download: HTTP ${res.status}`);
+  if (/text\/html/i.test(contentType)) throw new SlackFileScopeError("got an HTML sign-in page instead of the file");
+  return { bytes: new Uint8Array(await res.arrayBuffer()), contentType };
+}
+
 // Rewrite an existing bot message in place (chat.update) — used to disarm an
 // approval prompt whose proposal was decided outside Slack. Passing blocks
 // REPLACES the old blocks entirely, which is the point: the buttons go away.

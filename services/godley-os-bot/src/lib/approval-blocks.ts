@@ -14,7 +14,7 @@
 //    decided somewhere else (no via — the bot can't know where), so the
 //    buttons never stay live for an already-decided proposal.
 
-import { context, esc, formatUtc, section, type SlackBlock } from "./brief-blocks.js";
+import { context, esc, formatUtc, image, section, type SlackBlock } from "./brief-blocks.js";
 import { platformLabel } from "./social-blocks.js";
 
 // Keep the preview phone-sized; the full payload lives in the OS.
@@ -65,6 +65,50 @@ const WHATSAPP_PREVIEW_MAX = 1500;
 // only for Slack's hard block limit, same as the WhatsApp cap.
 const SOCIAL_PREVIEW_MAX = 1500;
 
+function fence(text: string): string {
+  return `\`\`\`\n${esc(truncate(text, SOCIAL_PREVIEW_MAX).replace(/`/g, "'"))}\n\`\`\``;
+}
+
+function firstMediaUrl(payload: Record<string, unknown>): string | null {
+  const urls = Array.isArray(payload.mediaUrls) ? payload.mediaUrls : [];
+  const first = urls.find((u): u is string => typeof u === "string" && /^https?:\/\//.test(u));
+  return first ?? null;
+}
+
+// The content agent's payload extras: targets [{ slug, name, platforms }]
+// and captions { slug: text }. Absent on Lil Bull's text posts.
+export function socialTargets(payload: Record<string, unknown>): { slug: string; name: string; platforms: string[] }[] {
+  if (!Array.isArray(payload.targets)) return [];
+  return payload.targets.flatMap((raw) => {
+    const t = raw as Record<string, unknown>;
+    if (typeof t.slug !== "string" || typeof t.name !== "string") return [];
+    const platforms = Array.isArray(t.platforms) ? t.platforms.filter((p): p is string => typeof p === "string") : [];
+    return [{ slug: t.slug, name: t.name, platforms }];
+  });
+}
+
+export function socialCaptions(payload: Record<string, unknown>): Map<string, string> {
+  const out = new Map<string, string>();
+  if (typeof payload.captions === "object" && payload.captions !== null && !Array.isArray(payload.captions)) {
+    for (const [slug, text] of Object.entries(payload.captions as Record<string, unknown>)) {
+      if (typeof text === "string" && text.trim()) out.set(slug, text);
+    }
+  }
+  return out;
+}
+
+// Where an approval prompt should be posted: a content item's proposal
+// carries the Slack thread the conversation lives in, so its buttons land
+// there instead of at the top of the channel. Only honored when the thread
+// is in the venture's own channel (the payload is data, the channel is the
+// resolved venture channel).
+export function promptThread(payload: Record<string, unknown>, ventureChannelId: string): string | undefined {
+  const channel = payload.slack_channel_id;
+  const threadTs = payload.slack_thread_ts;
+  if (typeof channel !== "string" || typeof threadTs !== "string") return undefined;
+  return channel === ventureChannelId && /^\d+\.\d+$/.test(threadTs) ? threadTs : undefined;
+}
+
 // Per-action payload previews. Field names mirror the os-ingest contract
 // (supabase/functions/os-ingest); anything unrecognized falls back to
 // compact field lines so a new action shows up readably instead of as JSON.
@@ -89,20 +133,40 @@ function previewBlocks(action: string, payload: Record<string, unknown>): SlackB
   }
   if (action === "social.post" && typeof payload.text === "string" && payload.text.trim()) {
     // The exact post body in a code block plus WHERE it goes — approval is
-    // the only path to publishing, so the owner must see both.
-    const full = payload.text.length <= SOCIAL_PREVIEW_MAX;
-    const fenced = esc(truncate(payload.text, SOCIAL_PREVIEW_MAX).replace(/`/g, "'"));
+    // the only path to publishing, so the owner must see both. A content
+    // item (image post, migration 008) adds the image itself, every target
+    // venture's caption, and the full target list.
     const platforms = Array.isArray(payload.platforms)
       ? payload.platforms.filter((p): p is string => typeof p === "string").map(platformLabel)
       : [];
-    const destinations = platforms.length > 0 ? platforms.join(", ") : "the venture's platform stack";
-    return [
-      section(`\`\`\`\n${fenced}\n\`\`\``),
+    const targets = socialTargets(payload);
+    const blocks: SlackBlock[] = [];
+    const mediaUrl = firstMediaUrl(payload);
+    if (mediaUrl) blocks.push(image(mediaUrl, "post image"));
+    const captions = socialCaptions(payload);
+    if (targets.length > 0 && captions.size > 0) {
+      for (const t of targets) {
+        const caption = captions.get(t.slug) ?? payload.text;
+        const where = t.platforms.length > 0 ? t.platforms.map(platformLabel).join(", ") : "⚠️ no platform configured";
+        blocks.push(section(`*${esc(t.name)}* → ${esc(where)}\n${fence(caption)}`));
+      }
+    } else {
+      blocks.push(section(fence(payload.text)));
+    }
+    const destinations =
+      targets.length > 0
+        ? targets.map((t) => `${t.name} (${t.platforms.map(platformLabel).join(", ") || "none"})`).join("; ")
+        : platforms.length > 0
+          ? platforms.join(", ")
+          : "the venture's platform stack";
+    const credit = typeof payload.credit === "string" && payload.credit ? ` Credit: ${payload.credit}.` : "";
+    blocks.push(
       context(
-        `${full ? "This exact text" : "Preview truncated — the full text"} publishes to ` +
-          `${esc(destinations)} via Blotato after approval. Nothing publishes without it.`,
+        `${payload.text.length <= SOCIAL_PREVIEW_MAX ? "This exact text" : "Preview truncated — the full text"} publishes to ` +
+          `${esc(destinations)} via Blotato after approval. Nothing publishes without it.${esc(credit)}`,
       ),
-    ];
+    );
+    return blocks;
   }
   if (action === "ledger.add") {
     const amount = formatCents(payload.amount_cents);

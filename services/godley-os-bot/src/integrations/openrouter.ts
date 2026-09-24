@@ -57,9 +57,16 @@ export interface OpenRouterToolCall {
   function: { name: string; arguments: string };
 }
 
+// Multi-part user content (OpenAI shape): text and image_url parts. Used
+// when the content agent shows the model a meme; text-only turns stay plain
+// strings.
+export type OpenRouterContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export type OpenRouterMessage =
   | { role: "system"; content: string }
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | OpenRouterContentPart[] }
   | { role: "assistant"; content: string | null; tool_calls?: OpenRouterToolCall[] }
   | { role: "tool"; tool_call_id: string; content: string };
 

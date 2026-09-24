@@ -25,6 +25,7 @@
 import {
   chatCompletion,
   resolveAiProvider,
+  type OpenRouterContentPart,
   type OpenRouterMessage,
   type OpenRouterTool,
   type OpenRouterToolCall,
@@ -59,6 +60,15 @@ export interface TextBlock {
   text: string;
 }
 
+// An image the model should LOOK at (the content agent's meme). URL source
+// only: the image is already mirrored to public Storage, and both providers
+// fetch by URL — Anthropic's { type: "image", source: { type: "url" } } and
+// OpenRouter's { type: "image_url" } (translated below).
+export interface ImageBlock {
+  type: "image";
+  source: { type: "url"; url: string };
+}
+
 export interface ToolUseBlock {
   type: "tool_use";
   id: string;
@@ -77,7 +87,7 @@ export interface ToolResultBlock {
 
 export interface ChatMessage {
   role: "user" | "assistant";
-  content: string | (ContentBlock | ToolResultBlock)[];
+  content: string | (ContentBlock | ToolResultBlock | ImageBlock)[];
 }
 
 export interface ModelReply {
@@ -93,6 +103,20 @@ export interface CallClaudeArgs {
   messages: ChatMessage[];
   tools?: AnthropicTool[];
   maxTokens?: number;
+  // Model override, used verbatim on whichever provider path is active
+  // (an OpenRouter slug or an Anthropic id — the caller resolves which, see
+  // resolveModelId). Default: the manager's model.
+  model?: string;
+  // Log prefix for the per-call cost line ("manager" / "content-agent").
+  label?: string;
+}
+
+// The manager's model id for the active provider path. Callers that take
+// a model from the environment (CONTENT_AGENT_MODEL) fall back to this.
+export function resolveModelId(override?: string): string {
+  const trimmed = override?.trim();
+  if (trimmed) return trimmed;
+  return resolveAiProvider() === "direct" ? MANAGER_MODEL : MANAGER_MODEL_OPENROUTER;
 }
 
 export async function callClaude(args: CallClaudeArgs): Promise<ModelReply> {
@@ -135,16 +159,26 @@ export function toOpenRouterMessages(system: string, messages: ChatMessage[]): O
       continue;
     }
     // User turn made of blocks: each tool_result is its own `tool` message
-    // (keyed by the call id); any text blocks become a user message.
-    const text: string[] = [];
+    // (keyed by the call id); text and image blocks become one user message
+    // — a plain string when it is text only, multi-part when an image rides
+    // along (OpenRouter's image_url part).
+    const parts: OpenRouterContentPart[] = [];
     for (const b of m.content) {
       if (b.type === "tool_result") {
         out.push({ role: "tool", tool_call_id: b.tool_use_id, content: b.content });
       } else if (b.type === "text") {
-        text.push(b.text);
+        parts.push({ type: "text", text: b.text });
+      } else if (b.type === "image") {
+        parts.push({ type: "image_url", image_url: { url: b.source.url } });
       }
     }
-    if (text.length > 0) out.push({ role: "user", content: text.join("\n") });
+    if (parts.length > 0) {
+      const textOnly = parts.every((p) => p.type === "text");
+      out.push({
+        role: "user",
+        content: textOnly ? parts.map((p) => (p.type === "text" ? p.text : "")).join("\n") : parts,
+      });
+    }
   }
   return out;
 }
@@ -179,12 +213,12 @@ export function toStopReason(finishReason: string | null, toolCallCount: number)
 
 async function callClaudeViaOpenRouter(args: CallClaudeArgs): Promise<ModelReply> {
   const reply = await chatCompletion({
-    model: MANAGER_MODEL_OPENROUTER,
+    model: args.model ?? MANAGER_MODEL_OPENROUTER,
     messages: toOpenRouterMessages(args.system, args.messages),
     maxTokens: args.maxTokens ?? DEFAULT_MAX_TOKENS,
     ...(args.tools && args.tools.length > 0 ? { tools: toOpenRouterTools(args.tools) } : {}),
     timeoutMs: CALL_TIMEOUT_MS,
-    label: "manager",
+    label: args.label ?? "manager",
   });
   const content: ContentBlock[] = [];
   if (reply.content && reply.content.trim()) content.push({ type: "text", text: reply.content });
@@ -229,6 +263,7 @@ function normalizeBlock(raw: unknown): ContentBlock | null {
 async function callClaudeDirect(args: CallClaudeArgs): Promise<ModelReply> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  const model = args.model ?? MANAGER_MODEL;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
@@ -243,7 +278,7 @@ async function callClaudeDirect(args: CallClaudeArgs): Promise<ModelReply> {
         "anthropic-version": ANTHROPIC_VERSION,
       },
       body: JSON.stringify({
-        model: MANAGER_MODEL,
+        model,
         max_tokens: args.maxTokens ?? DEFAULT_MAX_TOKENS,
         system: args.system,
         messages: args.messages,
@@ -288,7 +323,7 @@ async function callClaudeDirect(args: CallClaudeArgs): Promise<ModelReply> {
   // Cost visibility per call — latency and tokens only, never the key and
   // never message contents.
   console.log(
-    `[anthropic] ${MANAGER_MODEL} latency=${latencyMs}ms tokens_in=${inputTokens} ` +
+    `[anthropic] ${args.label ?? "manager"} ${model} latency=${latencyMs}ms tokens_in=${inputTokens} ` +
       `tokens_out=${outputTokens} stop=${stopReason ?? "?"}`,
   );
 

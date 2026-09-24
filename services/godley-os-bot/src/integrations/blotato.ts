@@ -1,14 +1,27 @@
 // Blotato publishing client — plain fetch, no SDK, same policy as every
 // other HTTP integration here. Every request/response shape below was
-// verified against help.blotato.com/api (publish-post, accounts, get-post);
-// do not extend a shape without re-reading those docs.
+// verified against help.blotato.com (rest-api-reference: publish-post,
+// upload-media-v2-media, accounts, accounts-and-identifiers) and the live
+// OpenAPI spec (backend.blotato.com/openapi.json); do not extend a shape
+// without re-reading those docs.
 //
-// DRY RUN: with no real key (unset, or the "pending" placeholder the Render
-// env ships with) or BLOTATO_DRY_RUN=1, publishPost() logs the exact request
-// it WOULD send and returns { dryRun: true } — the whole approval→publish
-// chain is testable end-to-end before a real key exists (generating the key
-// starts Blotato billing, so it arrives only at live-test time). A dry run
-// is an explicit result, never a silent no-op.
+// ONE KEY PER VENTURE. Every call is made on behalf of a venture and uses
+// THAT venture's key: BLOTATO_API_KEY__<SLUG_UPPER_SNAKE>, e.g.
+// BLOTATO_API_KEY__COUPLESTHERAPY101, BLOTATO_API_KEY__KINGDOM_BUILDING_OS.
+// The un-suffixed BLOTATO_API_KEY is the legacy shared key and is the
+// fallback for exactly one venture — lil-bull, whose production setup
+// predates per-venture keys. It is deliberately NOT a fallback for anyone
+// else: a venture without its own key runs in dry-run, because publishing
+// (or listing accounts for a sync) with another venture's key would be a
+// cross-venture leak, the one thing the whole schema is built to prevent.
+//
+// DRY RUN: with no real key for the venture (unset, or the "pending"
+// placeholder the Render env ships with) or BLOTATO_DRY_RUN=1, publishPost()
+// and uploadMedia() log the exact request they WOULD send and return
+// { dryRun: true } — the whole approval→publish chain is testable end-to-end
+// before a real key exists (generating the key starts Blotato billing, so
+// it arrives only at live-test time). A dry run is an explicit result,
+// never a silent no-op.
 //
 // Publishing is ASYNC on Blotato's side: POST /v2/posts answers 201 with a
 // postSubmissionId; the real outcome comes later from
@@ -16,6 +29,12 @@
 // requests/minute). Blotato's docs say "Do not retry on failed — most
 // failures are permanent", which matches this repo's terminal-failure
 // discipline exactly.
+//
+// Media: Blotato accepts any publicly accessible media URL directly in
+// mediaUrls, and also offers POST /v2/media { url } → 201 { url } which
+// copies the file to Blotato's own hosting (30 requests/minute). The
+// executor uploads first so a publish never depends on a third host staying
+// up mid-publish; the returned Blotato URL is what goes into mediaUrls.
 //
 // Key hygiene: the key travels only in the blotato-api-key header (Blotato
 // keys may end in "=" padding — preserved verbatim, never trimmed); errors
@@ -25,7 +44,10 @@ const BLOTATO_BASE_URL = "https://backend.blotato.com/v2";
 const REQUEST_TIMEOUT_MS = 30_000;
 const PLACEHOLDER_KEY = "pending";
 
-export type BlotatoPlatform = "twitter" | "linkedin" | "youtube";
+// The one venture the un-suffixed BLOTATO_API_KEY still serves (see header).
+export const LEGACY_SHARED_KEY_SLUG = "lil-bull";
+
+export type BlotatoPlatform = "twitter" | "linkedin" | "youtube" | "instagram" | "facebook";
 
 // Per-platform target objects, exactly as documented.
 export type PublishTarget =
@@ -36,7 +58,9 @@ export type PublishTarget =
       title: string;
       privacyStatus: "private" | "public" | "unlisted";
       shouldNotifySubscribers: boolean;
-    };
+    }
+  | { targetType: "instagram" }
+  | { targetType: "facebook"; pageId: string };
 
 // The POST /v2/posts body. scheduledTime/useNextFreeSlot are deliberately
 // NOT modeled: the approval gate is the only path to publishing, so every
@@ -55,6 +79,7 @@ export interface BuildPublishArgs {
   text: string;
   mediaUrls: string[]; // must be PUBLICLY accessible URLs; [] = text-only
   linkedinPageId?: string; // omit → personal profile
+  facebookPageId?: string; // REQUIRED for facebook (a Page is the only destination)
   youtube?: {
     title: string;
     privacyStatus: "private" | "public" | "unlisted";
@@ -74,6 +99,23 @@ export function buildPublishRequest(args: BuildPublishArgs): PublishRequest {
       args.linkedinPageId === undefined
         ? { targetType: "linkedin" }
         : { targetType: "linkedin", pageId: args.linkedinPageId };
+  } else if (args.platform === "instagram") {
+    // Instagram's feed has no text-only post; the schema only requires
+    // targetType, so the media rule is enforced here, before any claim.
+    if (args.mediaUrls.length === 0) {
+      throw new Error("instagram: an image or video mediaUrl is required — text-only posts cannot publish to Instagram");
+    }
+    target = { targetType: "instagram" };
+  } else if (args.platform === "facebook") {
+    // Facebook publishes to a PAGE: pageId is a required field of the
+    // documented target (page ids come from the subaccounts endpoint via the
+    // account sync — see listSubaccounts).
+    if (!args.facebookPageId) {
+      throw new Error(
+        "facebook: a Page id is required (venture_platforms.blotato_page_id) — run the Blotato account sync for this venture",
+      );
+    }
+    target = { targetType: "facebook", pageId: args.facebookPageId };
   } else {
     // YouTube is a video platform: the docs require a title and privacy
     // flags, and a post with no media has nothing to upload.
@@ -99,23 +141,72 @@ export function buildPublishRequest(args: BuildPublishArgs): PublishRequest {
   };
 }
 
-export function isDryRun(): boolean {
-  const key = process.env.BLOTATO_API_KEY;
-  return !key || key === PLACEHOLDER_KEY || process.env.BLOTATO_DRY_RUN === "1";
+// --- Key resolution ----------------------------------------------------------
+
+// couplestherapy101 → BLOTATO_API_KEY__COUPLESTHERAPY101,
+// kingdom-building-os → BLOTATO_API_KEY__KINGDOM_BUILDING_OS.
+export function ventureKeyName(ventureSlug: string): string {
+  return `BLOTATO_API_KEY__${ventureSlug.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
 }
 
-function requireKey(): string {
-  const key = process.env.BLOTATO_API_KEY;
-  if (!key || key === PLACEHOLDER_KEY) {
+export interface ResolvedKey {
+  // The usable key, or null when none is configured for this venture.
+  key: string | null;
+  // Which env var supplied it (names only — never logged with the value).
+  source: "venture" | "shared" | "none";
+  // Every configured-but-placeholder key counts as "none" for publishing.
+  placeholder: boolean;
+}
+
+export function resolveBlotatoKey(ventureSlug: string): ResolvedKey {
+  const own = process.env[ventureKeyName(ventureSlug)];
+  if (own !== undefined && own !== "") {
+    return own === PLACEHOLDER_KEY
+      ? { key: null, source: "venture", placeholder: true }
+      : { key: own, source: "venture", placeholder: false };
+  }
+  if (ventureSlug === LEGACY_SHARED_KEY_SLUG) {
+    const shared = process.env.BLOTATO_API_KEY;
+    if (shared !== undefined && shared !== "") {
+      return shared === PLACEHOLDER_KEY
+        ? { key: null, source: "shared", placeholder: true }
+        : { key: shared, source: "shared", placeholder: false };
+    }
+  }
+  return { key: null, source: "none", placeholder: false };
+}
+
+export function isDryRun(ventureSlug: string): boolean {
+  return resolveBlotatoKey(ventureSlug).key === null || process.env.BLOTATO_DRY_RUN === "1";
+}
+
+// The human-readable reason a venture is in dry-run — for logs, replies and
+// the ledger, names only.
+export function dryRunReason(ventureSlug: string): string {
+  if (process.env.BLOTATO_DRY_RUN === "1") return "BLOTATO_DRY_RUN=1";
+  const resolved = resolveBlotatoKey(ventureSlug);
+  if (resolved.placeholder) {
+    return `${resolved.source === "shared" ? "BLOTATO_API_KEY" : ventureKeyName(ventureSlug)} is the "pending" placeholder`;
+  }
+  return `no ${ventureKeyName(ventureSlug)} in the environment`;
+}
+
+function requireKey(ventureSlug: string): string {
+  const resolved = resolveBlotatoKey(ventureSlug);
+  if (resolved.key === null) {
     throw new Error(
-      "a real BLOTATO_API_KEY is required for this call (the placeholder keeps publishing in dry-run mode)",
+      `a real ${ventureKeyName(ventureSlug)} is required for this call (${dryRunReason(ventureSlug)} keeps ${ventureSlug} in dry-run mode)`,
     );
   }
-  return key;
+  return resolved.key;
 }
 
-async function blotatoFetch(path: string, init: { method: "GET" | "POST"; body?: unknown }): Promise<Response> {
-  const key = requireKey();
+async function blotatoFetch(
+  ventureSlug: string,
+  path: string,
+  init: { method: "GET" | "POST"; body?: unknown },
+): Promise<Response> {
+  const key = requireKey(ventureSlug);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -151,19 +242,47 @@ async function errorDetail(res: Response): Promise<string> {
   return detail;
 }
 
+// --- Media -------------------------------------------------------------------
+
+export type UploadMediaResult = { dryRun: true; wouldSend: { url: string } } | { dryRun: false; url: string };
+
+// POST /v2/media { url } → 201 { url }: copies a publicly reachable file to
+// Blotato's hosting and returns the URL to publish with.
+export async function uploadMedia(ventureSlug: string, sourceUrl: string): Promise<UploadMediaResult> {
+  if (!/^https?:\/\//.test(sourceUrl)) throw new Error("uploadMedia: the source must be a public http(s) URL");
+  if (isDryRun(ventureSlug)) {
+    console.log(
+      `[blotato] DRY RUN (${ventureSlug}: ${dryRunReason(ventureSlug)}) — would POST ${BLOTATO_BASE_URL}/media ` +
+        `${JSON.stringify({ url: sourceUrl })}`,
+    );
+    return { dryRun: true, wouldSend: { url: sourceUrl } };
+  }
+  const res = await blotatoFetch(ventureSlug, "/media", { method: "POST", body: { url: sourceUrl } });
+  if (res.status !== 201) {
+    throw new Error(`Blotato media upload rejected: ${await errorDetail(res)}`);
+  }
+  const body = (await res.json()) as { url?: unknown };
+  if (typeof body.url !== "string" || !/^https?:\/\//.test(body.url)) {
+    throw new Error("Blotato media upload returned 201 without a hosted url");
+  }
+  return { dryRun: false, url: body.url };
+}
+
+// --- Publishing --------------------------------------------------------------
+
 export type PublishResult =
   | { dryRun: true; wouldSend: PublishRequest }
   | { dryRun: false; postSubmissionId: string };
 
-export async function publishPost(request: PublishRequest): Promise<PublishResult> {
-  if (isDryRun()) {
+export async function publishPost(ventureSlug: string, request: PublishRequest): Promise<PublishResult> {
+  if (isDryRun(ventureSlug)) {
     console.log(
-      `[blotato] DRY RUN — would POST ${BLOTATO_BASE_URL}/posts for ` +
+      `[blotato] DRY RUN (${ventureSlug}: ${dryRunReason(ventureSlug)}) — would POST ${BLOTATO_BASE_URL}/posts for ` +
         `${request.post.content.platform} (account ${request.post.accountId}): ${JSON.stringify(request)}`,
     );
     return { dryRun: true, wouldSend: request };
   }
-  const res = await blotatoFetch("/posts", { method: "POST", body: request });
+  const res = await blotatoFetch(ventureSlug, "/posts", { method: "POST", body: request });
   if (res.status !== 201) {
     throw new Error(`Blotato publish rejected: ${await errorDetail(res)}`);
   }
@@ -181,8 +300,8 @@ export interface PostStatus {
   errorMessage?: string;
 }
 
-export async function getPostStatus(postSubmissionId: string): Promise<PostStatus> {
-  const res = await blotatoFetch(`/posts/${encodeURIComponent(postSubmissionId)}`, { method: "GET" });
+export async function getPostStatus(ventureSlug: string, postSubmissionId: string): Promise<PostStatus> {
+  const res = await blotatoFetch(ventureSlug, `/posts/${encodeURIComponent(postSubmissionId)}`, { method: "GET" });
   if (!res.ok) throw new Error(`Blotato post status failed: ${await errorDetail(res)}`);
   const body = (await res.json()) as Record<string, unknown>;
   const status = body.status;
@@ -197,6 +316,8 @@ export async function getPostStatus(postSubmissionId: string): Promise<PostStatu
   };
 }
 
+// --- Accounts ----------------------------------------------------------------
+
 export interface BlotatoAccount {
   id: string;
   platform: string;
@@ -204,10 +325,11 @@ export interface BlotatoAccount {
   username: string;
 }
 
-// Account discovery for wiring venture_platforms.blotato_account_id at
-// live-test time. Requires the real key by definition.
-export async function listAccounts(): Promise<BlotatoAccount[]> {
-  const res = await blotatoFetch("/users/me/accounts", { method: "GET" });
+// Account discovery for wiring venture_platforms.blotato_account_id —
+// GET /v2/users/me/accounts with THIS venture's key, so the ids that come
+// back can only ever be this venture's. Requires the real key by definition.
+export async function listAccounts(ventureSlug: string): Promise<BlotatoAccount[]> {
+  const res = await blotatoFetch(ventureSlug, "/users/me/accounts", { method: "GET" });
   if (!res.ok) throw new Error(`Blotato accounts listing failed: ${await errorDetail(res)}`);
   const body = (await res.json()) as { items?: unknown };
   const items = Array.isArray(body.items) ? body.items : [];
@@ -223,5 +345,29 @@ export async function listAccounts(): Promise<BlotatoAccount[]> {
           },
         ]
       : [];
+  });
+}
+
+export interface BlotatoSubaccount {
+  id: string; // the Page id — target.pageId for facebook (and linkedin company pages)
+  name: string;
+}
+
+// Facebook Pages (and LinkedIn Company Pages) are SUBACCOUNTS of the connected
+// account, not accounts of their own: GET /v2/users/me/accounts/:id/subaccounts
+// → { items: [{ id, accountId, name }] }; items[].id is what the facebook
+// target's pageId takes. The docs also spell the field `pageId` in one
+// place, so both are accepted.
+export async function listSubaccounts(ventureSlug: string, accountId: string): Promise<BlotatoSubaccount[]> {
+  const res = await blotatoFetch(ventureSlug, `/users/me/accounts/${encodeURIComponent(accountId)}/subaccounts`, {
+    method: "GET",
+  });
+  if (!res.ok) throw new Error(`Blotato subaccounts listing failed for account ${accountId}: ${await errorDetail(res)}`);
+  const body = (await res.json()) as { items?: unknown };
+  const items = Array.isArray(body.items) ? body.items : [];
+  return items.flatMap((raw) => {
+    const s = raw as Record<string, unknown>;
+    const id = typeof s.pageId === "string" ? s.pageId : typeof s.id === "string" ? s.id : null;
+    return id ? [{ id, name: typeof s.name === "string" ? s.name : "" }] : [];
   });
 }

@@ -11,12 +11,19 @@
 //                                   the EXISTING approval rails (Slack
 //                                   buttons / app inbox). Drafting never
 //                                   publishes; only approval does.
-//   GET  /admin/blotato-accounts  — list the Blotato accounts behind the
-//                                   real API key, for assigning
-//                                   venture_platforms.blotato_account_id at
-//                                   live-test time. Read-only; refuses with
-//                                   a clear message while the key is the
-//                                   placeholder.
+//   GET  /admin/blotato-accounts?venture=<slug>
+//                                 — list the Blotato accounts (and Facebook
+//                                   Pages) behind THAT venture's key
+//                                   (BLOTATO_API_KEY__<SLUG>; lil-bull falls
+//                                   back to BLOTATO_API_KEY). Read-only;
+//                                   refuses with a clear message while the
+//                                   key is missing or the placeholder.
+//   POST /admin/blotato-accounts/sync { "ventureSlug" }
+//                                 — upsert the venture's Instagram +
+//                                   Facebook venture_platforms rows from
+//                                   that listing (shared with the manager's
+//                                   "sync blotato accounts for <slug>").
+//                                   Internal config, not an external write.
 //   POST /admin/notify            — post one line to #studio-admin (the
 //                                   owner's console). Called by the
 //                                   deploy-on-main workflow with the deploy
@@ -32,7 +39,8 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
-import { listAccounts } from "../integrations/blotato.js";
+import { listAccounts, listSubaccounts, LEGACY_SHARED_KEY_SLUG } from "../integrations/blotato.js";
+import { syncBlotatoAccounts } from "../lib/blotato-sync.js";
 import { fileSocialDraft } from "../lib/file-social-draft.js";
 import { runPollCycle } from "../lib/report-poller.js";
 import { listChannelsByName, postMessage } from "../lib/slack-web.js";
@@ -155,16 +163,54 @@ adminRoutes.post("/notify", async (c) => {
 adminRoutes.get("/blotato-accounts", async (c) => {
   const denied = requireAdmin(c);
   if (denied) return denied;
+  // The venture whose key to use. Unnamed = the legacy shared key's venture,
+  // so the pre-008 call keeps working.
+  const ventureSlug = (c.req.query("venture") ?? LEGACY_SHARED_KEY_SLUG).trim();
+  if (!/^[a-z0-9-]+$/.test(ventureSlug)) return c.json({ ok: false, error: "venture must be a slug, e.g. couplestherapy101" }, 400);
   try {
-    const accounts = await listAccounts();
+    const accounts = await listAccounts(ventureSlug);
+    // Facebook (and LinkedIn) publish to a Page, which is a subaccount.
+    const withPages = [];
+    for (const a of accounts) {
+      const platform = a.platform.toLowerCase();
+      if (platform !== "facebook" && platform !== "linkedin") {
+        withPages.push(a);
+        continue;
+      }
+      try {
+        withPages.push({ ...a, pages: await listSubaccounts(ventureSlug, a.id) });
+      } catch (err) {
+        withPages.push({ ...a, pagesError: err instanceof Error ? err.message : String(err) });
+      }
+    }
     return c.json({
       ok: true,
-      accounts,
-      hint:
-        "assign in the Supabase SQL editor: update venture_platforms set blotato_account_id = '<id>' " +
-        "where venture_id = (select id from ventures where slug = '<slug>') and platform = '<platform>';",
+      venture: ventureSlug,
+      accounts: withPages,
+      hint: `POST /admin/blotato-accounts/sync {"ventureSlug":"${ventureSlug}"} writes the Instagram + Facebook rows — or say "sync blotato accounts for ${ventureSlug}" in #studio-admin`,
     });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 409);
   }
+});
+
+adminRoutes.post("/blotato-accounts/sync", async (c) => {
+  const denied = requireAdmin(c);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "body must be JSON" }, 400);
+  }
+  const ventureSlug =
+    typeof (body as Record<string, unknown> | null)?.ventureSlug === "string"
+      ? ((body as Record<string, unknown>).ventureSlug as string).trim()
+      : "";
+  if (!/^[a-z0-9-]+$/.test(ventureSlug)) {
+    return c.json({ ok: false, error: 'ventureSlug is required, e.g. "couplestherapy101"' }, 400);
+  }
+  const result = await syncBlotatoAccounts(ventureSlug);
+  if (!result.ok) return c.json({ ok: false, error: result.error }, result.status as 404 | 409 | 500 | 502);
+  return c.json(result);
 });

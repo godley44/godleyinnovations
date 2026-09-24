@@ -1,9 +1,10 @@
 // THE social-draft code path — files a content_calendar row plus its
 // 'social.post' proposal, extracted from src/routes/admin.ts so the AI
-// Manager's create_social_draft action and POST /admin/social-draft run
-// literally the same function. Drafting never publishes: the proposal it
-// files still rides the existing approval rails (Slack buttons / app
-// inbox / manager), and only approval publishes.
+// Manager's create_social_draft action, POST /admin/social-draft, and the
+// content agent's file_for_approval run literally the same function.
+// Drafting never publishes: the proposal it files still rides the existing
+// approval rails (Slack buttons / app inbox / manager), and only approval
+// publishes.
 
 import { isDryRun } from "../integrations/blotato.js";
 import { tableErrorMessage } from "./report-poller.js";
@@ -27,9 +28,20 @@ export interface SocialDraftRefused {
   error: string;
 }
 
+// The content agent's additions; every field optional so the text-post
+// callers are unchanged.
+export interface FileSocialDraftOptions {
+  kind?: "text" | "image";
+  contentItemId?: string;
+  captions?: Record<string, string>; // per venture slug, stored on the calendar row for the executor
+  proposedBy?: string;
+  payloadExtras?: Record<string, unknown>; // rendered by the approval surfaces
+}
+
 export async function fileSocialDraft(
   ventureSlug: string,
   body: unknown,
+  options: FileSocialDraftOptions = {},
 ): Promise<SocialDraftFiled | SocialDraftRefused> {
   const supabase = getSupabase();
   const { data: venture, error: ventureError } = await supabase
@@ -81,11 +93,14 @@ export async function fileSocialDraft(
     .from("content_calendar")
     .insert({
       venture_id: ventureId,
+      kind: options.kind ?? "text",
       body: draft.text,
       media_urls: draft.mediaUrls,
       platforms: draft.platforms,
       scheduled_for: draft.scheduledFor,
       status: "draft",
+      ...(options.contentItemId ? { content_item_id: options.contentItemId } : {}),
+      ...(options.captions ? { captions: options.captions } : {}),
     })
     .select("id")
     .single();
@@ -97,7 +112,7 @@ export async function fileSocialDraft(
         calError?.message ?? "no row returned",
         calError?.code,
         "content_calendar",
-        "007_social_publishing.sql",
+        options.kind === "image" ? "008_content_items.sql" : "007_social_publishing.sql",
       ),
     };
   }
@@ -105,7 +120,19 @@ export async function fileSocialDraft(
 
   const { data: propRow, error: propError } = await supabase
     .from("proposals")
-    .insert(socialProposalRow({ ventureId, calendarId, text: draft.text, platforms: draft.platforms }))
+    .insert(
+      socialProposalRow({
+        ventureId,
+        calendarId,
+        text: draft.text,
+        platforms: draft.platforms,
+        proposedBy: options.proposedBy,
+        extras: {
+          ...(draft.mediaUrls.length > 0 ? { mediaUrls: draft.mediaUrls } : {}),
+          ...(options.payloadExtras ?? {}),
+        },
+      }),
+    )
     .select("id")
     .single();
   if (propError || !propRow) {
@@ -137,6 +164,7 @@ export async function fileSocialDraft(
     };
   }
 
+  const dryRun = isDryRun(ventureSlug);
   return {
     ok: true,
     calendarId,
@@ -144,9 +172,9 @@ export async function fileSocialDraft(
     venture: ventureSlug,
     platforms: draft.platforms,
     scheduledFor: draft.scheduledFor,
-    dryRun: isDryRun(),
+    dryRun,
     next:
       "approve it via the Slack buttons or the app inbox — the poller publishes within a cycle of approval" +
-      (isDryRun() ? " (dry-run mode: the exact requests are logged, nothing reaches Blotato)" : ""),
+      (dryRun ? " (dry-run mode: the exact requests are logged, nothing reaches Blotato)" : ""),
   };
 }

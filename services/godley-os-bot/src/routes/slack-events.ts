@@ -3,21 +3,27 @@
 // Slack retries any event not acked within 3 seconds, so the handler does
 // nothing slow: verify (middleware), dedupe, log, ack. Real processing runs
 // fire-and-forget AFTER the 200 via processEvent() — including the AI
-// Manager's model calls, which take seconds — never before the ack.
+// Manager's and the content agent's model calls, which take seconds — never
+// before the ack.
 //
 // Routing (src/lib/manager-routing.ts):
-//   #studio-admin, human message   → the AI Manager (src/lib/manager.ts)
-//   any other channel, @mention    → the health probe (unchanged)
-//   everything else                → logged only (unchanged)
+//   #studio-admin, human message            → the AI Manager (src/lib/manager.ts)
+//   high-touch venture channel, human
+//     message or image drop (file_share)    → the venture content agent
+//                                             (src/lib/content-agent.ts), in-thread
+//   any other channel, @mention             → the health probe (unchanged)
+//   everything else                         → logged only (unchanged)
 
 import { Hono } from "hono";
+import { handleContentAgentEvent } from "../lib/content-agent.js";
 import { buildHealthText } from "../lib/health-text.js";
 import { handleManagerMessage } from "../lib/manager.js";
-import { classifyEvent } from "../lib/manager-routing.js";
+import { classifyEvent, FILE_SHARE_SUBTYPE } from "../lib/manager-routing.js";
 import { getManagerStats } from "../lib/manager-state.js";
 import { getPollerState } from "../lib/report-poller.js";
-import { getChannelName, postMessage } from "../lib/slack-web.js";
+import { getChannelName, normalizeFileRef, postMessage, type SlackFileRef } from "../lib/slack-web.js";
 import { slackVerify, type SlackVerifiedEnv } from "../lib/slack-verify.js";
+import { lookupVentureByChannelName } from "../lib/venture-map.js";
 
 interface SlackEvent {
   type: string;
@@ -29,6 +35,7 @@ interface SlackEvent {
   thread_ts?: string;
   bot_id?: string;
   subtype?: string;
+  files?: unknown[];
 }
 
 interface SlackEventsBody {
@@ -58,20 +65,27 @@ function alreadySeen(eventId: string | undefined): boolean {
 }
 
 // Everything here happens after Slack already got its 200, so it may become
-// as slow as it likes (Anthropic calls, Supabase reads, Slack posts).
+// as slow as it likes (model calls, Supabase reads, Slack posts).
 async function processEvent(event: SlackEvent): Promise<void> {
+  const files: SlackFileRef[] = (event.files ?? [])
+    .map(normalizeFileRef)
+    .filter((f): f is SlackFileRef => f !== null);
   console.log(
     `[events] ${event.type}${event.subtype ? `/${event.subtype}` : ""} ` +
-      `channel=${event.channel ?? "?"} user=${event.user ?? "?"} ` +
+      `channel=${event.channel ?? "?"} user=${event.user ?? "?"} files=${files.length} ` +
       `text=${JSON.stringify(event.text ?? "")}`,
   );
 
   const channelName = event.channel ? await getChannelName(event.channel) : null;
+  // #studio-admin is not a venture; every other channel might be one (the
+  // lookup is cached and never throws — a failure routes as hands_off).
+  const venture = channelName && channelName !== "studio-admin" ? await lookupVentureByChannelName(channelName) : null;
   const route = classifyEvent({
     type: event.type,
     channelName,
     botId: event.bot_id,
     subtype: event.subtype,
+    ventureMode: venture?.interactionMode ?? null,
   });
 
   if (route === "manager" && event.channel && event.user && event.ts) {
@@ -81,6 +95,19 @@ async function processEvent(event: SlackEvent): Promise<void> {
       text: event.text ?? "",
       ts: event.ts,
       threadTs: event.thread_ts,
+    });
+    return;
+  }
+
+  if (route === "venture-agent" && venture && event.channel && event.user && event.ts) {
+    await handleContentAgentEvent({
+      channel: event.channel,
+      user: event.user,
+      text: event.text ?? "",
+      ts: event.ts,
+      threadTs: event.thread_ts,
+      files,
+      venture,
     });
     return;
   }
@@ -124,9 +151,11 @@ slackEvents.post("/", slackVerify, (c) => {
     const isChannelMessage = event.type === "message" && event.channel_type === "channel";
     // Never react to bot-authored messages or edit/system subtypes — the
     // loop-breaker (bots replying to bots) inherited from ai-mesh-bot. The
-    // manager's own replies come back as bot messages, so this is what
-    // keeps it from talking to itself; classifyEvent checks it again.
-    const isHuman = !event.bot_id && !event.subtype;
+    // manager's and the agent's own replies come back as bot messages, so
+    // this is what keeps them from talking to themselves; classifyEvent
+    // checks it again. The one subtype that IS a human message is a file
+    // drop (file_share) — that is how a meme screenshot arrives.
+    const isHuman = !event.bot_id && (!event.subtype || event.subtype === FILE_SHARE_SUBTYPE);
     if ((isMention || isChannelMessage) && isHuman) {
       // Fire-and-forget: the 200 below goes out now, processing runs after.
       processEvent(event).catch((err) => {
