@@ -212,7 +212,7 @@ export async function loadFilingContext(venture: Venture): Promise<FilingContext
     .select("target_slug, content_type")
     .eq("source_slug", venture.slug)
     .eq("content_type", "meme");
-  if (xError) throw new Error(`venture_cross_publish query failed: ${xError.message} — migration 008 applied?`);
+  if (xError) throw new Error(`venture_cross_publish query failed: ${xError.message} — migration 009 applied?`);
   const targetSlugs = [...new Set((xData ?? []).map((r) => (r as { target_slug?: unknown }).target_slug).filter((s): s is string => typeof s === "string"))];
 
   const { data: vData, error: vError } = await supabase.from("ventures").select("id, slug, name").in("slug", [venture.slug, ...targetSlugs]);

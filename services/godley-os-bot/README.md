@@ -14,6 +14,7 @@ The research/framing/publishing pipelines are stubs on purpose.
 | `POST /slack/interactions` | Slack interactivity. Approve/Reject buttons write the decision to Supabase, then replace the original message ("✅ Approved by Justin" / "❌ Rejected by Justin"). A failed write is reported in-channel and nothing is retried silently. |
 | `POST /admin/deliver-now` | Runs one full poll cycle immediately (delivery, framing, prompts, disarm, publish, confirm — with full Slack channel resolution) and returns the result as JSON — for testing without waiting on the Monday cron. Auth: `Authorization: Bearer <ADMIN_SECRET>`; with the secret unset all admin routes refuse everything. |
 | `POST /admin/social-draft` | Files a social post: creates the `content_calendar` row and its `social.post` proposal, which rides the existing approval rails (Slack buttons / app inbox). Drafting never publishes — only approval does. Body: `{ "ventureSlug", "text", "platforms": ["twitter","linkedin"], "mediaUrls"?, "scheduledFor"? }` (`scheduledFor` is informational only this phase). Same bearer auth. |
+| `POST /admin/video-draft` | Turns approved text into a spoken video script (framing agent) and files it as a `video.script` proposal. Body: `{ "ventureSlug", "title", "platforms": ["youtube"], "sourceText" }` or `calendarId` in place of `sourceText`. Approving the script starts the video pipeline (see below); nothing is narrated or rendered before that. Same bearer auth. |
 | `GET /admin/blotato-accounts?venture=<slug>` | Lists the Blotato accounts (and Facebook/LinkedIn Pages, via the subaccounts endpoint) behind **that venture's** key (`BLOTATO_API_KEY__<SLUG_UPPER_SNAKE>`; `lil-bull` falls back to the legacy `BLOTATO_API_KEY`). Refuses with a clear message while the key is missing or the `pending` placeholder. Same bearer auth. |
 | `POST /admin/blotato-accounts/sync` | Body `{ "ventureSlug" }`. Upserts the venture's Instagram + Facebook `venture_platforms` rows (account id, Facebook Page id) from that listing — the phone-only replacement for the SQL editor, shared with the manager's `sync blotato accounts for <slug>`. Internal configuration; publishes nothing. Same bearer auth. |
 | `POST /admin/notify` | Posts one line to **#studio-admin** (the owner's console). Body: `{ "text", "level"?: "info" \| "error" }` — `info` is prefixed 🚀, `error` 🚨. Used by the `deploy-on-main` GitHub workflow to report every production deploy (what merged, migrations applied, functions deployed, bot version) and every failure. Answers 502 with the reason when the channel is missing or the bot isn't a member. Never touches the database. Same bearer auth. |
@@ -163,9 +164,58 @@ proposal's buttons post in the same cycle. Poller steps are isolated: a
 missing migration fails its own step loudly ("run migration 006") while
 deliveries and approvals keep working.
 
+## Voice-first video (phase 3 of the social backbone)
+
+Approved text becomes a narrated video in the owner's cloned voice, then
+rides the same gate to publish. Two approvals, in order, so no money is
+spent before a human says so:
+
+1. **Script.** `POST /admin/video-draft` hands the source text (pasted, or a
+   calendar row of the same venture) to the framing agent with its own TUNE
+   ME prompt (`src/lib/video-script.ts`): conversational, one takeaway,
+   45–90 seconds spoken, no market number not present in the source, ending
+   on the venture's `ventures.video_cta`. The output is checked (length
+   band, CTA last, spoken sentences only) and filed as a **`video.script`**
+   proposal — the whole script in the Slack prompt. Approving it writes
+   nothing (like `whatsapp.message`); it is the go signal.
+2. **Video.** The poller's video step (`src/lib/video-jobs.ts`) claims each
+   approved script in the **`video_jobs`** ledger (migration 009,
+   `unique(script_proposal_id)`, claim-before-run) and walks it through
+   persisted stages — `scripted → narrated → assembling → assembled →
+   proposed`, or terminal `failed` (reason recorded) / `dry-run`; delete the
+   row to re-arm (a re-run spends again):
+   - **narrated** — ElevenLabs text-to-speech (`src/integrations/elevenlabs.ts`,
+     plain fetch, `eleven_multilingual_v2`) in `ventures.elevenlabs_voice_id`
+     (NULL → the account's single cloned voice is resolved once and recorded;
+     two clones = the owner picks by SQL). The mp3 goes to the PUBLIC
+     Storage bucket `media` (`video/<job>/narration.mp3`).
+   - **assembling** — Pictory (`src/integrations/pictory.ts`, plain fetch):
+     a 9:16 storyboard whose `voiceOver.externalVoice.voiceUrl` is our
+     narration (verified in Pictory's docs — the script text drives the
+     scenes and captions, the cloned voice is the audio), polled once per
+     cycle; storyboard done → render; render done → the MP4 is re-hosted at
+     `video/<job>/video.mp4` (Pictory purges its URLs; Blotato needs a public
+     one; >300 MB is refused, Blotato's Instagram ceiling).
+   - **proposed** — a `content_calendar` row with `kind='video'`, the title,
+     the script as caption, and the video URL, plus a **`social.post`**
+     proposal carrying `preview_url` so the owner **watches the video before
+     approving** (Slack prompt and app inbox both link it).
+3. **Publish.** On that approval the existing publish step sends
+   `kind='video'` posts via Blotato to **YouTube** (title from the row,
+   `privacyStatus` from `venture_platforms.youtube_privacy`, subscribers
+   notified only for public uploads, `containsSyntheticMedia: true` because
+   the voice is AI-cloned) and **Instagram** as a Reel once its
+   `venture_platforms` row is enabled with an account id. Text posts still
+   publish to X/LinkedIn only; video posts to YouTube/Instagram only.
+
+Dry run: `VIDEO_DRY_RUN=1` logs what a job would spend and records it as
+`dry-run`; the Blotato dry run (placeholder key) still covers the publish
+half. The `@mention` health probe counts videos in production and failed
+jobs; `POST /admin/deliver-now` returns the per-job outcome as `videos`.
+
 ## The venture content agent (high-touch channels) — CouplesTherapy101 memes
 
-`ventures.interaction_mode` (migration 008) splits venture channels in two:
+`ventures.interaction_mode` (migration 009) splits venture channels in two:
 `hands_off` keeps the workroom behavior above; `high_touch` sends every owner
 message in the channel — including a dropped image — to the content agent
 (`src/lib/content-agent.ts`), which always answers **in the drop's thread**.
@@ -364,8 +414,9 @@ the content agent — Slack profile → "…" → Copy member ID),
 `BLOTATO_API_KEY__COUPLESTHERAPY101` and `BLOTATO_API_KEY__KINGDOM_BUILDING_OS`
 (one Blotato key per venture; `pending`/unset = that venture in dry run),
 `BLOTATO_API_KEY` (the legacy key, `lil-bull` only), `BLOTATO_DRY_RUN`
-(optional), `IMGFLIP_USERNAME` / `IMGFLIP_PASSWORD` (meme riffs; unset =
-reposts only), `CONTENT_AGENT_MODEL` (optional).
+(optional), `ELEVENLABS_API_KEY` and `PICTORY_API_KEY` (the video pipeline),
+`VIDEO_DRY_RUN` (optional), `IMGFLIP_USERNAME` / `IMGFLIP_PASSWORD` (meme
+riffs; unset = reposts only), `CONTENT_AGENT_MODEL` (optional).
 
 ## Local development
 

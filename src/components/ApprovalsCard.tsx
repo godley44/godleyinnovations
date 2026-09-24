@@ -43,6 +43,10 @@ function summarize(p: Proposal): string {
       return `Open ticket: ${String(d.subject ?? "")}${d.customer ? ` (from ${String(d.customer)})` : ""}`;
     case "note.append":
       return "Add note:";
+    case "whatsapp.message":
+      return "WhatsApp message (hand-off to Slack after approval):";
+    case "video.script":
+      return `Video script — "${String(d.title ?? "")}" (narration + assembly start after approval):`;
     case "social.post": {
       const targets = socialTargets(d);
       const where =
@@ -51,7 +55,9 @@ function summarize(p: Proposal): string {
           : Array.isArray(d.platforms)
             ? (d.platforms as unknown[]).filter((p): p is string => typeof p === "string").map(platformLabel).join(", ")
             : "the venture's platforms";
-      return `Publish social post to ${where}:`;
+      return d.kind === "video"
+        ? `Publish VIDEO "${String(d.title ?? "")}" to ${where} — watch it below before approving:`
+        : `Publish social post to ${where}:`;
     }
     default:
       // Unknown action: still shown (never hidden), just raw. apply_proposal
@@ -242,10 +248,20 @@ export function ApprovalsCard({ ventureId }: { ventureId?: string }) {
             <li key={p.id} className="approval-item">
               <div className="approval-body">
                 <p className="approval-desc">{summarize(p)}</p>
-                {p.action === "note.append" && (
+                {p.action === "social.post" && typeof p.payload.preview_url === "string" && (
+                  <p className="approval-payload">
+                    <a href={p.payload.preview_url} target="_blank" rel="noreferrer">
+                      ▶ Watch the video
+                    </a>
+                  </p>
+                )}
+                {(p.action === "note.append" || p.action === "whatsapp.message") && (
                   <p className="approval-payload prewrap">{String(p.payload.text ?? "")}</p>
                 )}
                 {p.action === "social.post" && <SocialPostPreview payload={p.payload} />}
+                {p.action === "video.script" && (
+                  <p className="approval-payload prewrap">{String(p.payload.script ?? "")}</p>
+                )}
                 <p className="muted approval-meta">
                   {!ventureId && p.ventures ? `${p.ventures.name} · ` : ""}
                   {p.proposed_by} · {when(p.created_at)}

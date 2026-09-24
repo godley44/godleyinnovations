@@ -30,7 +30,9 @@
 //     others; the venture channel — or, for an image post, the content
 //     item's Slack thread — gets a per-target summary. Also sweeps
 //     'proposed' calendar rows whose proposal was REJECTED to 'rejected'
-//     (rejection never runs apply_proposal, so the bot owns that flip). The
+//     (rejection never runs apply_proposal, so the bot owns that flip). Text
+//     posts publish to X/LinkedIn, image posts to Instagram/Facebook, video
+//     posts (the video_jobs ledger's) to YouTube/Instagram Reels. The
 //     approval gate is the ONLY path here — scheduled_for is ignored.
 //  F. CONFIRM  — Blotato publishing is async, so 'submitted' ledger rows are
 //     polled (GET /v2/posts/:id) until 'published' (+public URL) or terminal
@@ -69,6 +71,7 @@ import { buildPublishSummary } from "./social-blocks.js";
 import { aggregateCalendar, outcomeFromRow, type PublishLedgerRow, type PublishLedgerStatus } from "./social-publish.js";
 import { getSupabase } from "./supabase.js";
 import { listChannelsByName, postMessage, updateMessage, type SlackChannel } from "./slack-web.js";
+import { runVideoStep, type VideoCandidate } from "./video-jobs.js";
 import { buildWhatsAppDelivery } from "./whatsapp-blocks.js";
 
 const POLL_INTERVAL_MS = 60 * 1000;
@@ -170,6 +173,8 @@ export interface PollerState {
   lastPrompts: PromptCandidate[];
   lastFramings: FramingCandidate[];
   lastPublishes: PublishCandidate[];
+  lastVideos: VideoCandidate[];
+  lastVideoActivityAt: string | null;
 }
 
 const state: PollerState = {
@@ -186,6 +191,8 @@ const state: PollerState = {
   lastPrompts: [],
   lastFramings: [],
   lastPublishes: [],
+  lastVideos: [],
+  lastVideoActivityAt: null,
 };
 
 export function getPollerState(): PollerState {
@@ -194,6 +201,7 @@ export function getPollerState(): PollerState {
     lastDeliveries: [...state.lastDeliveries],
     lastPrompts: [...state.lastPrompts],
     lastFramings: [...state.lastFramings],
+    lastVideos: [...state.lastVideos],
     lastPublishes: [...state.lastPublishes],
   };
 }
@@ -911,7 +919,7 @@ async function runDisarmStep(): Promise<PromptCandidate[]> {
 // --- Step E: publish approved social posts via Blotato ---------------------
 
 const MIGRATION_007 = "007_social_publishing.sql";
-const MIGRATION_008 = "008_content_items.sql";
+const MIGRATION_009 = "009_content_items.sql";
 // Dry-run publishes must work end-to-end BEFORE a venture's real key (and
 // therefore before any real account id) exists; the logged would-send
 // request carries these placeholders so the gap is visible, not hidden.
@@ -919,13 +927,16 @@ const DRY_RUN_ACCOUNT_PLACEHOLDER = "account-id-not-set";
 const DRY_RUN_PAGE_PLACEHOLDER = "page-id-not-set";
 
 const CALENDAR_COLS =
-  "id, venture_id, kind, body, media_urls, platforms, status, captions, content_item_id, venture:ventures(name, slug), " +
+  "id, venture_id, kind, title, body, media_urls, platforms, status, captions, content_item_id, venture:ventures(name, slug), " +
   "content_item:content_items(id, content_type, slack_channel_id, slack_thread_ts)";
+
+type CalendarKind = "text" | "image" | "video";
 
 interface CalendarRow {
   id: string;
   venture_id: string;
-  kind: string;
+  kind: CalendarKind;
+  title: string | null; // YouTube title on a video post (migration 008)
   body: string;
   media_urls: string[];
   platforms: string[];
@@ -972,7 +983,8 @@ function normalizeCalendar(raw: unknown): CalendarRow | null {
   return {
     id: row.id,
     venture_id: row.venture_id,
-    kind: typeof row.kind === "string" ? row.kind : "text",
+    kind: row.kind === "video" ? "video" : row.kind === "image" ? "image" : "text",
+    title: typeof row.title === "string" && row.title.trim() ? row.title : null,
     body: row.body,
     media_urls: Array.isArray(row.media_urls) ? row.media_urls.filter((u): u is string => typeof u === "string") : [],
     platforms: row.platforms.filter((p): p is string => typeof p === "string"),
@@ -986,6 +998,26 @@ function normalizeCalendar(raw: unknown): CalendarRow | null {
 
 const PUBLISH_LEDGER_STATUSES: readonly string[] = ["publishing", "submitted", "published", "failed", "dry-run"];
 const LEDGER_COLS = "calendar_id, venture_id, platform, status, submission_id, public_url, error, venture:ventures(name, slug)";
+
+type YoutubePrivacy = "private" | "public" | "unlisted";
+function isYoutubePrivacy(value: string | null): value is YoutubePrivacy {
+  return value === "private" || value === "public" || value === "unlisted";
+}
+
+// Which Blotato targets a post of this kind may publish to: text posts go
+// to twitter/linkedin; image posts (the content agent's memes) to
+// instagram/facebook (and twitter/linkedin, which take images too); video
+// posts (kind='video', from the video_jobs ledger) to youtube/instagram.
+// The Blotato client enforces each platform's own requirements at
+// request-build time.
+type SupportedPlatform = "twitter" | "linkedin" | "youtube" | "instagram" | "facebook";
+function supportedPlatform(kind: CalendarKind, platform: string): SupportedPlatform | null {
+  if (kind === "video") return platform === "youtube" || platform === "instagram" ? platform : null;
+  if (kind === "image") {
+    return platform === "instagram" || platform === "facebook" || platform === "twitter" || platform === "linkedin" ? platform : null;
+  }
+  return platform === "twitter" || platform === "linkedin" ? platform : null;
+}
 
 function normalizePublishRow(raw: unknown): (PublishLedgerRow & { venture_slug: string | null }) | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -1008,10 +1040,10 @@ function normalizePublishRow(raw: unknown): (PublishLedgerRow & { venture_slug: 
 }
 
 function calendarErrorMessage(message: string, code: string | undefined): string {
-  // Migration 008 added the image-post columns; a bot deployed ahead of it
+  // Migration 009 added the image-post columns; a bot deployed ahead of it
   // fails here by name.
   if (/captions|content_item/i.test(message)) {
-    return `content_calendar is missing the migration-008 columns (${message}) — run supabase/migrations/${MIGRATION_008}. Nothing was published by this step.`;
+    return `content_calendar is missing the migration-008 columns (${message}) — run supabase/migrations/${MIGRATION_009}. Nothing was published by this step.`;
   }
   return tableErrorMessage(message, code, "content_calendar", MIGRATION_007);
 }
@@ -1024,7 +1056,7 @@ async function recordPublishFailure(calendarId: string, ventureId: string, platf
     .from("social_publishes")
     .insert({ calendar_id: calendarId, venture_id: ventureId, platform, status: "failed", error: reason });
   if (error && error.code !== UNIQUE_VIOLATION) {
-    throw new Error(tableErrorMessage(error.message, error.code, "social_publishes", MIGRATION_008));
+    throw new Error(tableErrorMessage(error.message, error.code, "social_publishes", MIGRATION_009));
   }
 }
 
@@ -1070,7 +1102,7 @@ async function loadPublishPlans(rows: CalendarRow[]): Promise<Map<string, Publis
     .from("venture_cross_publish")
     .select("source_slug, target_slug, content_type")
     .in("source_slug", sourceSlugs);
-  if (xError) throw new Error(tableErrorMessage(xError.message, xError.code, "venture_cross_publish", MIGRATION_008));
+  if (xError) throw new Error(tableErrorMessage(xError.message, xError.code, "venture_cross_publish", MIGRATION_009));
   const crossRows = (xData ?? []).map((r) => r as { source_slug: string; target_slug: string; content_type: string });
 
   const slugs = new Set<string>(sourceSlugs);
@@ -1082,7 +1114,7 @@ async function loadPublishPlans(rows: CalendarRow[]): Promise<Map<string, Publis
   const ventureIds = [...ventures.values()].map((v) => v.id);
   const { data: vpData, error: vpError } = await supabase
     .from("venture_platforms")
-    .select("venture_id, platform, blotato_account_id, blotato_page_id, enabled")
+    .select("venture_id, platform, blotato_account_id, blotato_page_id, youtube_privacy, enabled")
     .in("venture_id", ventureIds);
   if (vpError) throw new Error(tableErrorMessage(vpError.message, vpError.code, "venture_platforms", MIGRATION_007));
   const stacks: StackRow[] = (vpData ?? []).flatMap((raw) => {
@@ -1094,6 +1126,7 @@ async function loadPublishPlans(rows: CalendarRow[]): Promise<Map<string, Publis
             platform: d.platform,
             accountId: typeof d.blotato_account_id === "string" ? d.blotato_account_id : null,
             pageId: typeof d.blotato_page_id === "string" ? d.blotato_page_id : null,
+            youtubePrivacy: typeof d.youtube_privacy === "string" ? d.youtube_privacy : null,
             enabled: d.enabled === true,
           },
         ]
@@ -1197,12 +1230,6 @@ async function settleCalendarRow(
   }
 }
 
-// Platforms the Blotato client can publish this phase. youtube (video +
-// per-post title) comes with the video phase.
-function supportedPlatform(platform: string): "twitter" | "linkedin" | "instagram" | "facebook" | null {
-  return platform === "twitter" || platform === "linkedin" || platform === "instagram" || platform === "facebook" ? platform : null;
-}
-
 async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>): Promise<PublishCandidate[]> {
   const supabase = getSupabase();
 
@@ -1261,7 +1288,7 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
       rows.map((r) => r.id),
     );
   if (ledgerError) {
-    throw new Error(tableErrorMessage(ledgerError.message, ledgerError.code, "social_publishes", MIGRATION_008));
+    throw new Error(tableErrorMessage(ledgerError.message, ledgerError.code, "social_publishes", MIGRATION_009));
   }
   const ledger = new Map<string, PublishLedgerRow>();
   for (const raw of ledgerData ?? []) {
@@ -1366,18 +1393,34 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
       // the venture-isolation guarantee lives in this lookup (and in the
       // per-venture key inside the Blotato client).
       const dryRun = isDryRun(t.ventureSlug);
-      const supported = supportedPlatform(t.platform);
+      const supported = supportedPlatform(row.kind, t.platform);
+      const youtubePrivacy = t.stack?.youtubePrivacy ?? null;
       const sync = `run "sync blotato accounts for ${t.ventureSlug}" in #studio-admin`;
       let refuse: string | null = null;
       if (!t.stack) {
         refuse = `${t.ventureName} has no venture_platforms row for ${t.platform} — posts never borrow another venture's accounts; ${sync}`;
       } else if (!t.stack.enabled) {
-        refuse = `${t.platform} is disabled in venture_platforms for ${t.ventureName}`;
+        refuse =
+          `${t.platform} is disabled in venture_platforms for ${t.ventureName}` +
+          (t.platform === "instagram" ? ` — connect the account in Blotato, then ${sync}` : "");
       } else if (supported === null) {
         refuse =
-          t.platform === "youtube"
-            ? "youtube needs a per-post video and title — video posts land in a later phase"
-            : `platform ${t.platform} is not yet supported by the Blotato client (twitter/linkedin/instagram/facebook this phase)`;
+          row.kind === "video"
+            ? `video posts publish to youtube/instagram only — not ${t.platform}`
+            : row.kind === "image"
+              ? `image posts publish to instagram/facebook (or twitter/linkedin) — not ${t.platform}`
+              : t.platform === "youtube" || t.platform === "instagram"
+                ? `${t.platform} needs a video — text posts publish to twitter/linkedin; use POST /admin/video-draft`
+                : `platform ${t.platform} is not yet supported by the Blotato client`;
+      } else if ((row.kind === "video" || row.kind === "image") && row.media_urls.length === 0) {
+        refuse =
+          row.kind === "video"
+            ? "video post has no media_urls — the video_jobs ledger did not attach the rendered video"
+            : "image post has no media_urls — the content item's public mirror is missing";
+      } else if (row.kind === "video" && t.platform === "youtube" && !row.title) {
+        refuse = "youtube needs a title and this video post has none";
+      } else if (row.kind === "video" && t.platform === "youtube" && !isYoutubePrivacy(youtubePrivacy)) {
+        refuse = `venture_platforms.youtube_privacy must be private, public, or unlisted for ${t.ventureName}`;
       } else if (!dryRun && t.stack.accountId === null) {
         refuse = `blotato_account_id is not set for ${t.platform} on ${t.ventureName} — ${sync}`;
       } else if (!dryRun && supported === "facebook" && t.stack.pageId === null) {
@@ -1415,7 +1458,7 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
           candidates.push(candidate);
           continue;
         }
-        throw new Error(tableErrorMessage(claimError.message, claimError.code, "social_publishes", MIGRATION_008));
+        throw new Error(tableErrorMessage(claimError.message, claimError.code, "social_publishes", MIGRATION_009));
       }
       changed = true;
 
@@ -1429,6 +1472,18 @@ async function runPublishStep(channels: () => Promise<Map<string, SlackChannel>>
           mediaUrls,
           linkedinPageId: supported === "linkedin" && stack.pageId !== null ? stack.pageId : undefined,
           facebookPageId: supported === "facebook" ? (stack.pageId ?? DRY_RUN_PAGE_PLACEHOLDER) : undefined,
+          instagramMediaType: supported === "instagram" ? (row.kind === "video" ? "reel" : "image") : undefined,
+          ...(supported === "youtube" && row.title && isYoutubePrivacy(youtubePrivacy)
+            ? {
+                youtube: {
+                  title: row.title,
+                  privacyStatus: youtubePrivacy,
+                  // Subscribers hear about public uploads only; private and
+                  // unlisted ones are the owner's to share.
+                  shouldNotifySubscribers: youtubePrivacy === "public",
+                },
+              }
+            : {}),
         });
         const result = await publishPost(t.ventureSlug, request);
         if (result.dryRun) {
@@ -1507,7 +1562,7 @@ async function runStatusPollStep(channels: () => Promise<Map<string, SlackChanne
     .select(LEDGER_COLS)
     .eq("status", "submitted")
     .limit(POLL_LIMIT); // well under Blotato's 60 req/min on this endpoint
-  if (error) throw new Error(tableErrorMessage(error.message, error.code, "social_publishes", MIGRATION_008));
+  if (error) throw new Error(tableErrorMessage(error.message, error.code, "social_publishes", MIGRATION_009));
   const submitted = (data ?? [])
     .map(normalizePublishRow)
     .filter((r): r is NonNullable<ReturnType<typeof normalizePublishRow>> => r !== null && r.submission_id !== null);
@@ -1655,6 +1710,14 @@ export async function runPollCycle(): Promise<CycleResult> {
       stepErrors.push(`disarm: ${errorText(err)}`);
     }
     state.lastPrompts = [...prompts, ...disarmed];
+    try {
+      state.lastVideos = await runVideoStep();
+      if (state.lastVideos.some((v) => v.status === "narrated" || v.status === "assembled" || v.status === "assembling")) {
+        state.lastVideoActivityAt = startedAt;
+      }
+    } catch (err) {
+      stepErrors.push(`video: ${errorText(err)}`);
+    }
     let published: PublishCandidate[] = [];
     try {
       published = await runPublishStep(channels);
@@ -1702,7 +1765,7 @@ export function startReportPoller(): void {
   state.intervalRunning = true;
   console.log(
     `[poller] started (every ${POLL_INTERVAL_MS / 1000}s: deliveries, WhatsApp framing, approval prompts, disarm, ` +
-      "social publish, publish confirm)",
+      "video jobs, social publish, publish confirm)",
   );
   const tick = () => {
     runPollCycle().catch((err) => {

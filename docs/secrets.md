@@ -43,6 +43,8 @@ Supabase by hand any more:
 | `IMGFLIP_USERNAME` / `IMGFLIP_PASSWORD` | ✓ | | | new — an imgflip.com account (free) for the content agent's meme riffs; unset = reposts only |
 | `CONTENT_AGENT_MODEL` | ✓ (optional) | | | new — the content agent's vision model id; unset = the manager's model |
 | `OPENROUTER_API_KEY` | ✓ | | | new — the bot's AI calls go through OpenRouter (openrouter.ai → Keys; prepaid credits) |
+| `ELEVENLABS_API_KEY` | ✓ | | | new — video narration in the cloned voice (elevenlabs.io → API Keys; Creator plan for cloning) |
+| `PICTORY_API_KEY` | ✓ | | | new — video assembly (pictory.ai API self-serve plan; key starts `pictai_`) |
 | `SUPABASE_ACCESS_TOKEN` | | ✓ | | was a GitHub secret (write-only there — regenerate at supabase.com → Account → Access Tokens when moving it) |
 | `SUPABASE_DB_URL` | | ✓ | | was a GitHub secret (Supabase → Connect → Session pooler string, with the DB password) |
 | `BOT_URL` | | ✓ | | was a GitHub secret; not secret — the bot's Render URL |

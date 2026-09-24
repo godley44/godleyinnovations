@@ -11,6 +11,14 @@
 //                                   the EXISTING approval rails (Slack
 //                                   buttons / app inbox). Drafting never
 //                                   publishes; only approval does.
+//   POST /admin/video-draft       — turn approved text into a spoken script
+//                                   (framing agent) and file it as a
+//                                   'video.script' proposal. Approving the
+//                                   script starts the video_jobs ledger
+//                                   (narration → assembly), which files the
+//                                   finished video as a social.post proposal
+//                                   with a preview link. Two approvals, no
+//                                   money spent before the first.
 //   GET  /admin/blotato-accounts?venture=<slug>
 //                                 — list the Blotato accounts (and Facebook
 //                                   Pages) behind THAT venture's key
@@ -42,6 +50,7 @@ import { Hono, type Context } from "hono";
 import { listAccounts, listSubaccounts, LEGACY_SHARED_KEY_SLUG } from "../integrations/blotato.js";
 import { syncBlotatoAccounts } from "../lib/blotato-sync.js";
 import { fileSocialDraft } from "../lib/file-social-draft.js";
+import { fileVideoDraft } from "../lib/file-video-draft.js";
 import { runPollCycle } from "../lib/report-poller.js";
 import { listChannelsByName, postMessage } from "../lib/slack-web.js";
 
@@ -89,7 +98,32 @@ adminRoutes.post("/deliver-now", async (c) => {
     prompts: result.state.lastPrompts,
     framings: result.state.lastFramings,
     publishes: result.state.lastPublishes,
+    videos: result.state.lastVideos,
   });
+});
+
+adminRoutes.post("/video-draft", async (c) => {
+  const denied = requireAdmin(c);
+  if (denied) return denied;
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "body must be JSON" }, 400);
+  }
+  const ventureSlug =
+    typeof (body as Record<string, unknown> | null)?.ventureSlug === "string"
+      ? ((body as Record<string, unknown>).ventureSlug as string).trim()
+      : "";
+  if (!ventureSlug) {
+    return c.json({ ok: false, error: 'ventureSlug is required, e.g. "lil-bull"' }, 400);
+  }
+  const result = await fileVideoDraft(ventureSlug, body);
+  if (!result.ok) {
+    return c.json({ ok: false, error: result.error }, result.status as 400 | 404 | 500 | 502);
+  }
+  return c.json(result);
 });
 
 adminRoutes.post("/social-draft", async (c) => {

@@ -1,5 +1,6 @@
 -- ============================================================================
--- Migration 008: CouplesTherapy101 Part 1 — the meme MVP.
+-- Migration 009: CouplesTherapy101 Part 1 — the meme MVP.
+-- Runs after 008 (the video pipeline), which already admits kind 'video'.
 -- Applied by deploy-on-main (supabase db push) after merge; every statement
 -- is idempotent so a re-run is a no-op.
 --
@@ -28,7 +29,7 @@
 --      row per APPROVED-OR-PROPOSED social post; a content item exists from
 --      the moment the image lands, through the conversation, and may never
 --      become a post at all.
---   4. content_calendar learns image posts (kind 'image'), points back at
+--   4. content_calendar learns image posts (kind 'image', beside 008's 'video'), points back at
 --      its content item, and carries the per-venture captions the executor
 --      publishes.
 --   5. social_publishes becomes per (post, VENTURE, platform): the ledger
@@ -42,8 +43,8 @@
 --      loudly, same as Lil Bull's rows in 007).
 --   7. Supabase Storage bucket `content-media` (public read; the bot writes
 --      with the service-role key at <venture_slug>/<content_item_id>/<file>).
---      Guarded: plain Postgres in CI has no storage schema, and the bot also
---      creates the bucket on first use if it is missing.
+--      Guarded in case the storage schema is absent (the CI shim provides
+--      storage.buckets); the bot also creates the bucket on first use.
 -- ============================================================================
 
 -- 1. ventures: interaction mode + voice.
@@ -120,7 +121,7 @@ create index if not exists content_items_thread_idx on public.content_items (sla
 
 -- 4. Calendar rows learn image posts and their provenance.
 alter table public.content_calendar drop constraint if exists content_calendar_kind_check;
-alter table public.content_calendar add constraint content_calendar_kind_check check (kind in ('text', 'image'));
+alter table public.content_calendar add constraint content_calendar_kind_check check (kind in ('text', 'image', 'video'));
 alter table public.content_calendar add column if not exists content_item_id uuid references public.content_items (id) on delete set null;
 alter table public.content_calendar add column if not exists captions jsonb not null default '{}'::jsonb;
 

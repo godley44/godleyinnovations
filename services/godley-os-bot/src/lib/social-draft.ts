@@ -104,8 +104,12 @@ export interface SocialProposalRowArgs {
   text: string;
   platforms: string[];
   // Who filed it: 'admin' (the route / the manager), 'content-agent' (the
-  // in-thread meme flow). Defaults to 'admin' — the historical value.
+  // in-thread meme flow), 'video-agent' (the video_jobs ledger). Defaults
+  // to 'admin' — the historical value.
   proposedBy?: string;
+  // Video posts: the YouTube title and the preview URL the owner watches
+  // before approving.
+  video?: { title: string; previewUrl: string };
   // Extra payload fields the approval surfaces render (mediaUrls, per-venture
   // captions, the target list, the Slack thread to answer in…). All
   // optional so Lil Bull's text posts are byte-for-byte unchanged.
@@ -116,16 +120,34 @@ export interface SocialProposalRowArgs {
 // shape test. text/platforms ride in the payload so the Slack approval
 // prompt can show exactly what will be published; apply_proposal() reads
 // only calendar_id (the calendar row is the record the approval flips).
+export interface SocialPostPayload {
+  calendar_id: string;
+  text: string;
+  platforms: string[];
+  // Video posts only (kind='video', filed by the video_jobs ledger): the
+  // YouTube title and the public preview URL the owner can WATCH before
+  // approving. Absent on text and image posts.
+  kind?: "video";
+  title?: string;
+  preview_url?: string;
+}
+
 export function socialProposalRow(args: SocialProposalRowArgs): {
   venture_id: string;
   action: "social.post";
   proposed_by: string;
-  payload: { calendar_id: string; text: string; platforms: string[] } & Record<string, unknown>;
+  payload: SocialPostPayload & Record<string, unknown>;
 } {
   return {
     venture_id: args.ventureId,
     action: "social.post",
     proposed_by: args.proposedBy ?? "admin",
-    payload: { ...(args.extras ?? {}), calendar_id: args.calendarId, text: args.text, platforms: args.platforms },
+    payload: {
+      ...(args.extras ?? {}),
+      calendar_id: args.calendarId,
+      text: args.text,
+      platforms: args.platforms,
+      ...(args.video ? { kind: "video" as const, title: args.video.title, preview_url: args.video.previewUrl } : {}),
+    },
   };
 }

@@ -1,4 +1,4 @@
-// content_items (migration 008) — one row per image the owner dropped in a
+// content_items (migration 009) — one row per image the owner dropped in a
 // high-touch venture channel. The data access for the content agent lives
 // here so the agent's logic stays pure and testable with fakes.
 //
@@ -70,7 +70,7 @@ export function normalizeItem(raw: unknown): ContentItem | null {
   };
 }
 
-const MIGRATION_HINT = " — if the table is missing, migration 008_content_items.sql has not been applied yet";
+const MIGRATION_HINT = " — if the table is missing, migration 009_content_items.sql has not been applied yet";
 
 export async function loadThreadItems(channelId: string, threadTs: string): Promise<ContentItem[]> {
   const { data, error } = await getSupabase()

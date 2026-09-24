@@ -49,7 +49,11 @@ export const LEGACY_SHARED_KEY_SLUG = "lil-bull";
 
 export type BlotatoPlatform = "twitter" | "linkedin" | "youtube" | "instagram" | "facebook";
 
-// Per-platform target objects, exactly as documented.
+// Per-platform target objects, exactly as documented (help.blotato.com
+// rest-api-reference/publish-post: youtube requires title, privacyStatus,
+// shouldNotifySubscribers and accepts containsSyntheticMedia; instagram's
+// optional mediaType is "reel" for a video and omitted for a feed image;
+// facebook requires the Page id).
 export type PublishTarget =
   | { targetType: "twitter" }
   | { targetType: "linkedin"; pageId?: string }
@@ -58,8 +62,9 @@ export type PublishTarget =
       title: string;
       privacyStatus: "private" | "public" | "unlisted";
       shouldNotifySubscribers: boolean;
+      containsSyntheticMedia: boolean;
     }
-  | { targetType: "instagram" }
+  | { targetType: "instagram"; mediaType?: "reel" }
   | { targetType: "facebook"; pageId: string };
 
 // The POST /v2/posts body. scheduledTime/useNextFreeSlot are deliberately
@@ -80,11 +85,18 @@ export interface BuildPublishArgs {
   mediaUrls: string[]; // must be PUBLICLY accessible URLs; [] = text-only
   linkedinPageId?: string; // omit → personal profile
   facebookPageId?: string; // REQUIRED for facebook (a Page is the only destination)
+  instagramMediaType?: "reel" | "image"; // a video Reel or a feed image; omitted = inferred from the first media url
   youtube?: {
     title: string;
     privacyStatus: "private" | "public" | "unlisted";
     shouldNotifySubscribers: boolean;
   };
+}
+
+// Instagram's mediaType is inferred from the file when the caller does not
+// say: a video file publishes as a Reel, anything else as a feed image.
+function looksLikeVideo(url: string): boolean {
+  return /\.(mp4|mov|m4v|webm|avi)(\?|#|$)/i.test(url);
 }
 
 // Pure request construction with the per-platform requirements enforced
@@ -101,11 +113,13 @@ export function buildPublishRequest(args: BuildPublishArgs): PublishRequest {
         : { targetType: "linkedin", pageId: args.linkedinPageId };
   } else if (args.platform === "instagram") {
     // Instagram's feed has no text-only post; the schema only requires
-    // targetType, so the media rule is enforced here, before any claim.
+    // targetType, so the media rule is enforced here, before any claim. A
+    // video publishes as a Reel (mediaType "reel"); an image as a feed post.
     if (args.mediaUrls.length === 0) {
       throw new Error("instagram: an image or video mediaUrl is required — text-only posts cannot publish to Instagram");
     }
-    target = { targetType: "instagram" };
+    const reel = args.instagramMediaType === "reel" || (args.instagramMediaType === undefined && looksLikeVideo(args.mediaUrls[0]!));
+    target = reel ? { targetType: "instagram", mediaType: "reel" } : { targetType: "instagram" };
   } else if (args.platform === "facebook") {
     // Facebook publishes to a PAGE: pageId is a required field of the
     // documented target (page ids come from the subaccounts endpoint via the
@@ -118,7 +132,8 @@ export function buildPublishRequest(args: BuildPublishArgs): PublishRequest {
     target = { targetType: "facebook", pageId: args.facebookPageId };
   } else {
     // YouTube is a video platform: the docs require a title and privacy
-    // flags, and a post with no media has nothing to upload.
+    // flags, and a post with no media has nothing to upload. The narration
+    // is an AI-cloned voice, so the synthetic-media disclosure is always on.
     if (args.mediaUrls.length === 0) {
       throw new Error("youtube: a video mediaUrl is required — text-only posts cannot publish to YouTube");
     }
@@ -130,6 +145,7 @@ export function buildPublishRequest(args: BuildPublishArgs): PublishRequest {
       title: args.youtube.title,
       privacyStatus: args.youtube.privacyStatus,
       shouldNotifySubscribers: args.youtube.shouldNotifySubscribers,
+      containsSyntheticMedia: true,
     };
   }
   return {

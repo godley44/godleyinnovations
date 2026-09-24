@@ -3,7 +3,7 @@
 // (#lil-bull, …) are the agents' workrooms and keep their existing behavior
 // (@mention = health probe, messages logged only); #studio-admin is the
 // owner's office and EVERY human message there goes to the AI Manager; and
-// a HIGH-TOUCH venture channel (ventures.interaction_mode, migration 008)
+// a HIGH-TOUCH venture channel (ventures.interaction_mode, migration 009)
 // sends every human message — including file drops — to the venture
 // content agent, which always answers in the message's thread.
 

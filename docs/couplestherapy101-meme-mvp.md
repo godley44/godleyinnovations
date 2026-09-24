@@ -2,7 +2,7 @@
 
 How a meme gets from Justin's phone to CouplesTherapy101's and Kingdom
 Building OS's Instagram/Facebook, with a human hand on every step. Shipped
-in bot v0.11.0 with migration 008.
+in bot v0.11.0 with migration 009.
 
 ## The flow
 

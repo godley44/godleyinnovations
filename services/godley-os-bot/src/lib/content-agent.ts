@@ -1,5 +1,5 @@
 // The venture content agent — the in-thread collaborator for HIGH-TOUCH
-// venture channels (ventures.interaction_mode, migration 008). Today's
+// venture channels (ventures.interaction_mode, migration 009). Today's
 // venture: #couplestherapy101. Flow per human message (the events route
 // already acked Slack; everything here is post-200 background work):
 //

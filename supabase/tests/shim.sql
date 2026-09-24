@@ -8,3 +8,11 @@ create or replace function auth.jwt() returns jsonb language sql stable as $$
   select coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb)
 $$;
 create publication supabase_realtime;
+-- Supabase Storage's catalog (migration 008 declares the public 'media'
+-- bucket there). Only the columns the migration touches.
+create schema if not exists storage;
+create table if not exists storage.buckets (
+  id     text primary key,
+  name   text not null,
+  public boolean not null default false
+);

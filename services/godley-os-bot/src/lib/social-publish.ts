@@ -1,10 +1,10 @@
 // Pure state logic for the social publishing pipeline: how a post's
-// per-target ledger rows (social_publishes, migrations 007 + 008) roll up
+// per-target ledger rows (social_publishes, migrations 007 + 009) roll up
 // into the content_calendar aggregate status, and how a ledger row renders
 // as a summary-line outcome. Kept free of I/O so the state machine is
 // unit-testable; the poller owns all database and Blotato calls.
 //
-// A TARGET is a (venture, platform) pair — since migration 008 a post may
+// A TARGET is a (venture, platform) pair — since migration 009 a post may
 // publish to more than one venture (venture_cross_publish), each through
 // its own key and accounts, so the ledger is keyed by venture_id:platform
 // (content-publish.ts → ledgerKey). A single-venture text post simply has

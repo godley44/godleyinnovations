@@ -112,7 +112,7 @@ export async function fileSocialDraft(
         calError?.message ?? "no row returned",
         calError?.code,
         "content_calendar",
-        options.kind === "image" ? "008_content_items.sql" : "007_social_publishing.sql",
+        options.kind === "image" ? "009_content_items.sql" : "007_social_publishing.sql",
       ),
     };
   }

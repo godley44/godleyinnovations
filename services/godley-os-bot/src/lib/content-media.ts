@@ -7,7 +7,7 @@
 //
 // Layout: <venture_slug>/<content_item_id>/<file>. Public READ is the point
 // (Blotato and the vision model fetch by URL); writes are service-role only.
-// The bucket is created by migration 008 and, belt and braces, on first use
+// The bucket is created by migration 009 and, belt and braces, on first use
 // here if it is somehow missing.
 
 import { getSupabase } from "./supabase.js";

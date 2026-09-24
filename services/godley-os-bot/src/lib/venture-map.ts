@@ -3,7 +3,7 @@
 // (ventures.slug, migration 001 — lowercase letters, digits, hyphens, which
 // is also exactly Slack's channel-name alphabet).
 //
-// Since migration 008 a venture also has an interaction_mode: 'hands_off'
+// Since migration 009 a venture also has an interaction_mode: 'hands_off'
 // channels keep the original workroom behavior (messages logged, @mention =
 // health probe); 'high_touch' channels route every owner message to the
 // venture content agent (src/lib/content-agent.ts).
@@ -65,7 +65,7 @@ export async function resolveVenture(slug: string): Promise<Venture> {
 // the channel is not a venture (e.g. #studio-admin, #general). Cached
 // briefly — every message in every channel the bot is in triggers it — and
 // a lookup failure is logged and treated as "not a venture" so routing can
-// never break event handling. (A missing migration 008 column surfaces
+// never break event handling. (A missing migration 009 column surfaces
 // here once; the channel then behaves as hands_off, which is the old
 // behavior.)
 const LOOKUP_TTL_MS = 5 * 60 * 1000;

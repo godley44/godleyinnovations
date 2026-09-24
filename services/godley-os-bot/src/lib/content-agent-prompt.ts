@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // TUNE ME: this is the venture content agent's operating rules. The VOICE
-// comes from the database (ventures.voice_prompt, migration 008) and is
+// comes from the database (ventures.voice_prompt, migration 009) and is
 // prepended per venture; the rules below are shared by every high-touch
 // venture. Edit freely — the safety-critical behavior (owner-only,
 // confirm-before-file, the agent never publishes) is enforced in CODE

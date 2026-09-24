@@ -76,7 +76,8 @@ export interface StackRow {
   ventureId: string;
   platform: string;
   accountId: string | null;
-  pageId: string | null;
+  pageId: string | null; // LinkedIn company page / Facebook Page id
+  youtubePrivacy?: string | null; // youtube rows only (migration 007)
   enabled: boolean;
 }
 
@@ -99,7 +100,7 @@ export interface ExpandTargetsArgs {
 }
 
 // The ledger key for a (venture, platform) pair — social_publishes is
-// unique on (calendar_id, venture_id, platform) since migration 008.
+// unique on (calendar_id, venture_id, platform) since migration 009.
 export function ledgerKey(ventureId: string, platform: string): string {
   return `${ventureId}:${platform}`;
 }

@@ -106,7 +106,59 @@ begin
   delete from proposals where id = pid;
 end $$;
 
--- Migration 008: high-touch ventures, the cross-publish map, content items,
+-- video.script (migration 008): approval is a no-write go signal — the
+-- proposal flips, nothing else changes, and the bot's video_jobs ledger
+-- admits exactly one job per script.
+insert into proposals (venture_id, action, payload, proposed_by)
+  select id, 'video.script',
+         jsonb_build_object('script', 'pipeline test script', 'title', 'Pipeline test', 'platforms', array['youtube']),
+         'video-agent'
+  from ventures where slug = 'test-venture';
+select apply_proposal(id) from proposals where status = 'pending';
+do $$
+declare st text; n int;
+begin
+  select status into st from proposals where action = 'video.script';
+  if st <> 'approved' then raise exception 'video.script approval did not flip the proposal (got %)', st; end if;
+  select count(*) into n from content_calendar where kind = 'video';
+  if n <> 0 then raise exception 'video.script approval must not create calendar rows (found %)', n; end if;
+end $$;
+insert into video_jobs (venture_id, script_proposal_id)
+  select venture_id, id from proposals where action = 'video.script';
+do $$
+declare vid uuid; pid uuid;
+begin
+  select venture_id, id into vid, pid from proposals where action = 'video.script';
+  begin
+    insert into video_jobs (venture_id, script_proposal_id) values (vid, pid);
+    raise exception 'a second video_jobs claim for the same script was NOT blocked';
+  exception when unique_violation then null;
+  end;
+end $$;
+-- A kind='video' calendar row carries its title.
+insert into content_calendar (venture_id, kind, title, body, media_urls, platforms, status)
+  select id, 'video', 'Pipeline test video', 'caption', '["https://example.com/v.mp4"]'::jsonb, array['youtube'], 'draft'
+  from ventures where slug = 'test-venture';
+do $$
+declare n int;
+begin
+  select count(*) into n from content_calendar where kind = 'video' and title = 'Pipeline test video';
+  if n <> 1 then raise exception 'kind=video calendar row was not accepted'; end if;
+end $$;
+-- The public media bucket exists (storage schema is owner-only, so check as
+-- the superuser).
+reset role;
+do $$
+declare n int;
+begin
+  select count(*) into n from storage.buckets where id = 'media' and public;
+  if n <> 1 then raise exception 'public media bucket is missing'; end if;
+  select count(*) into n from storage.buckets where id = 'content-media' and public;
+  if n <> 1 then raise exception 'public content-media bucket (migration 009) is missing'; end if;
+end $$;
+select set_config('request.jwt.claims', '{"email":"godleyj5@gmail.com"}', false);
+set role app_user;
+-- Migration 009: high-touch ventures, the cross-publish map, content items,
 -- image posts, and the per-venture publish ledger.
 do $$
 declare n int; mode text;
@@ -203,4 +255,5 @@ begin
 end $$;
 
 reset role;
+select 'pipeline_test OK: apply, double-apply block, note append, social.post flip + guard, video.script + video_jobs claim, RLS isolation all verified' as result;
 select 'pipeline_test OK: apply, double-apply block, note append, social.post flip + guard, content items + per-venture ledger (008), RLS isolation all verified' as result;

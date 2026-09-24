@@ -130,6 +130,8 @@ test("youtube request carries the documented required flags", () => {
     title: "Weekly Brief",
     privacyStatus: "public",
     shouldNotifySubscribers: false,
+    // The narration is an AI-cloned voice: the disclosure is always on.
+    containsSyntheticMedia: true,
   });
   assert.equal(req.post.content.platform, "youtube");
 });

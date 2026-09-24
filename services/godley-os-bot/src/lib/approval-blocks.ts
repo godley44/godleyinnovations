@@ -134,15 +134,28 @@ function previewBlocks(action: string, payload: Record<string, unknown>): SlackB
   if (action === "social.post" && typeof payload.text === "string" && payload.text.trim()) {
     // The exact post body in a code block plus WHERE it goes — approval is
     // the only path to publishing, so the owner must see both. A content
-    // item (image post, migration 008) adds the image itself, every target
-    // venture's caption, and the full target list.
+    // item (image post, migration 009) adds the image itself, every target
+    // venture's caption, and the full target list; a video post (migration
+    // 008) leads with the preview link so the owner WATCHES it first.
     const platforms = Array.isArray(payload.platforms)
       ? payload.platforms.filter((p): p is string => typeof p === "string").map(platformLabel)
       : [];
     const targets = socialTargets(payload);
+    const isVideo = payload.kind === "video";
     const blocks: SlackBlock[] = [];
-    const mediaUrl = firstMediaUrl(payload);
-    if (mediaUrl) blocks.push(image(mediaUrl, "post image"));
+    if (isVideo) {
+      const previewUrl = typeof payload.preview_url === "string" && /^https?:\/\//.test(payload.preview_url) ? payload.preview_url : null;
+      const title = typeof payload.title === "string" && payload.title.trim() ? payload.title.trim() : null;
+      blocks.push(
+        section(
+          (title ? `*${esc(title)}*\n` : "") +
+            (previewUrl ? `▶️ <${previewUrl}|Watch the video> before approving.` : "⚠️ No preview link on this video post — do not approve blind."),
+        ),
+      );
+    } else {
+      const mediaUrl = firstMediaUrl(payload);
+      if (mediaUrl) blocks.push(image(mediaUrl, "post image"));
+    }
     const captions = socialCaptions(payload);
     if (targets.length > 0 && captions.size > 0) {
       for (const t of targets) {
@@ -162,11 +175,34 @@ function previewBlocks(action: string, payload: Record<string, unknown>): SlackB
     const credit = typeof payload.credit === "string" && payload.credit ? ` Credit: ${payload.credit}.` : "";
     blocks.push(
       context(
-        `${payload.text.length <= SOCIAL_PREVIEW_MAX ? "This exact text" : "Preview truncated — the full text"} publishes to ` +
+        `${payload.text.length <= SOCIAL_PREVIEW_MAX ? "This exact text" : "Preview truncated — the full text"} ` +
+          `${isVideo ? "is the caption/description and the video above publish" : "publishes"} to ` +
           `${esc(destinations)} via Blotato after approval. Nothing publishes without it.${esc(credit)}`,
       ),
     );
     return blocks;
+  }
+  if (action === "video.script" && typeof payload.script === "string" && payload.script.trim()) {
+    // The WHOLE spoken script (it is what the cloned voice will read, word
+    // for word), the title, and where the finished video will be proposed
+    // to go. Approving spends narration and rendering minutes; the video
+    // itself comes back as a separate social.post approval.
+    const full = payload.script.length <= PREVIEW_MAX;
+    const fenced = esc(truncate(payload.script, PREVIEW_MAX).replace(/`/g, "'"));
+    const platforms = Array.isArray(payload.platforms)
+      ? payload.platforms.filter((p): p is string => typeof p === "string").map(platformLabel)
+      : [];
+    const title = typeof payload.title === "string" ? payload.title : "";
+    const words = payload.script.split(/\s+/).filter(Boolean).length;
+    return [
+      section(`*${esc(title)}* · ${words} words${platforms.length > 0 ? ` · for ${esc(platforms.join(", "))}` : ""}`),
+      section(`\`\`\`\n${fenced}\n\`\`\``),
+      context(
+        `${full ? "This exact script" : "Preview truncated — the full script"} gets narrated in the cloned voice and ` +
+          "assembled into a video after approval (that spends ElevenLabs and Pictory minutes). " +
+          "The finished video comes back as its own approval with a preview link — nothing publishes until then.",
+      ),
+    ];
   }
   if (action === "ledger.add") {
     const amount = formatCents(payload.amount_cents);
