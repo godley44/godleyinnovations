@@ -93,16 +93,40 @@ export function validateSocialDraft(body: unknown, stack: VenturePlatformRow[]):
 // shape test. text/platforms ride in the payload so the Slack approval
 // prompt can show exactly what will be published; apply_proposal() reads
 // only calendar_id (the calendar row is the record the approval flips).
-export function socialProposalRow(args: { ventureId: string; calendarId: string; text: string; platforms: string[] }): {
+export interface SocialPostPayload {
+  calendar_id: string;
+  text: string;
+  platforms: string[];
+  // Video posts only (kind='video', filed by the video_jobs ledger): the
+  // YouTube title and the public preview URL the owner can WATCH before
+  // approving. Absent on text posts.
+  kind?: "video";
+  title?: string;
+  preview_url?: string;
+}
+
+export function socialProposalRow(args: {
+  ventureId: string;
+  calendarId: string;
+  text: string;
+  platforms: string[];
+  proposedBy?: "admin" | "video-agent";
+  video?: { title: string; previewUrl: string };
+}): {
   venture_id: string;
   action: "social.post";
-  proposed_by: "admin";
-  payload: { calendar_id: string; text: string; platforms: string[] };
+  proposed_by: "admin" | "video-agent";
+  payload: SocialPostPayload;
 } {
   return {
     venture_id: args.ventureId,
     action: "social.post",
-    proposed_by: "admin",
-    payload: { calendar_id: args.calendarId, text: args.text, platforms: args.platforms },
+    proposed_by: args.proposedBy ?? "admin",
+    payload: {
+      calendar_id: args.calendarId,
+      text: args.text,
+      platforms: args.platforms,
+      ...(args.video ? { kind: "video" as const, title: args.video.title, preview_url: args.video.previewUrl } : {}),
+    },
   };
 }

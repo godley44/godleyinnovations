@@ -11,6 +11,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   twitter: "X/Twitter",
   linkedin: "LinkedIn",
   youtube: "YouTube",
+  instagram: "Instagram",
 };
 
 export type PlatformOutcome =

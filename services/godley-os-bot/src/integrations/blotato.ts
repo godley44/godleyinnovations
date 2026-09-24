@@ -25,9 +25,12 @@ const BLOTATO_BASE_URL = "https://backend.blotato.com/v2";
 const REQUEST_TIMEOUT_MS = 30_000;
 const PLACEHOLDER_KEY = "pending";
 
-export type BlotatoPlatform = "twitter" | "linkedin" | "youtube";
+export type BlotatoPlatform = "twitter" | "linkedin" | "youtube" | "instagram";
 
-// Per-platform target objects, exactly as documented.
+// Per-platform target objects, exactly as documented (help.blotato.com/api/
+// api-reference/publish-post: youtube requires title, privacyStatus,
+// shouldNotifySubscribers and accepts containsSyntheticMedia; instagram's
+// mediaType is "reel" for videos).
 export type PublishTarget =
   | { targetType: "twitter" }
   | { targetType: "linkedin"; pageId?: string }
@@ -36,7 +39,9 @@ export type PublishTarget =
       title: string;
       privacyStatus: "private" | "public" | "unlisted";
       shouldNotifySubscribers: boolean;
-    };
+      containsSyntheticMedia: boolean;
+    }
+  | { targetType: "instagram"; mediaType: "reel" };
 
 // The POST /v2/posts body. scheduledTime/useNextFreeSlot are deliberately
 // NOT modeled: the approval gate is the only path to publishing, so every
@@ -74,9 +79,16 @@ export function buildPublishRequest(args: BuildPublishArgs): PublishRequest {
       args.linkedinPageId === undefined
         ? { targetType: "linkedin" }
         : { targetType: "linkedin", pageId: args.linkedinPageId };
+  } else if (args.platform === "instagram") {
+    // Instagram video = a Reel; a post with no media has nothing to upload.
+    if (args.mediaUrls.length === 0) {
+      throw new Error("instagram: a video mediaUrl is required — text-only posts cannot publish to Instagram");
+    }
+    target = { targetType: "instagram", mediaType: "reel" };
   } else {
     // YouTube is a video platform: the docs require a title and privacy
-    // flags, and a post with no media has nothing to upload.
+    // flags, and a post with no media has nothing to upload. The narration
+    // is an AI-cloned voice, so the synthetic-media disclosure is always on.
     if (args.mediaUrls.length === 0) {
       throw new Error("youtube: a video mediaUrl is required — text-only posts cannot publish to YouTube");
     }
@@ -88,6 +100,7 @@ export function buildPublishRequest(args: BuildPublishArgs): PublishRequest {
       title: args.youtube.title,
       privacyStatus: args.youtube.privacyStatus,
       shouldNotifySubscribers: args.youtube.shouldNotifySubscribers,
+      containsSyntheticMedia: true,
     };
   }
   return {

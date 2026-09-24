@@ -89,18 +89,53 @@ function previewBlocks(action: string, payload: Record<string, unknown>): SlackB
   }
   if (action === "social.post" && typeof payload.text === "string" && payload.text.trim()) {
     // The exact post body in a code block plus WHERE it goes — approval is
-    // the only path to publishing, so the owner must see both.
+    // the only path to publishing, so the owner must see both. A video post
+    // leads with the preview link: the owner WATCHES it before approving.
     const full = payload.text.length <= SOCIAL_PREVIEW_MAX;
     const fenced = esc(truncate(payload.text, SOCIAL_PREVIEW_MAX).replace(/`/g, "'"));
     const platforms = Array.isArray(payload.platforms)
       ? payload.platforms.filter((p): p is string => typeof p === "string").map(platformLabel)
       : [];
     const destinations = platforms.length > 0 ? platforms.join(", ") : "the venture's platform stack";
+    const isVideo = payload.kind === "video";
+    const previewUrl = typeof payload.preview_url === "string" && /^https?:\/\//.test(payload.preview_url) ? payload.preview_url : null;
+    const title = typeof payload.title === "string" && payload.title.trim() ? payload.title.trim() : null;
+    const videoBlocks: SlackBlock[] = isVideo
+      ? [
+          section(
+            (title ? `*${esc(title)}*\n` : "") +
+              (previewUrl ? `▶️ <${previewUrl}|Watch the video> before approving.` : "⚠️ No preview link on this video post — do not approve blind."),
+          ),
+        ]
+      : [];
     return [
+      ...videoBlocks,
       section(`\`\`\`\n${fenced}\n\`\`\``),
       context(
-        `${full ? "This exact text" : "Preview truncated — the full text"} publishes to ` +
+        `${full ? "This exact text" : "Preview truncated — the full text"} ${isVideo ? "is the caption/description and the video above publish" : "publishes"} to ` +
           `${esc(destinations)} via Blotato after approval. Nothing publishes without it.`,
+      ),
+    ];
+  }
+  if (action === "video.script" && typeof payload.script === "string" && payload.script.trim()) {
+    // The WHOLE spoken script (it is what the cloned voice will read, word
+    // for word), the title, and where the finished video will be proposed
+    // to go. Approving spends narration and rendering minutes; the video
+    // itself comes back as a separate social.post approval.
+    const full = payload.script.length <= PREVIEW_MAX;
+    const fenced = esc(truncate(payload.script, PREVIEW_MAX).replace(/`/g, "'"));
+    const platforms = Array.isArray(payload.platforms)
+      ? payload.platforms.filter((p): p is string => typeof p === "string").map(platformLabel)
+      : [];
+    const title = typeof payload.title === "string" ? payload.title : "";
+    const words = payload.script.split(/\s+/).filter(Boolean).length;
+    return [
+      section(`*${esc(title)}* · ${words} words${platforms.length > 0 ? ` · for ${esc(platforms.join(", "))}` : ""}`),
+      section(`\`\`\`\n${fenced}\n\`\`\``),
+      context(
+        `${full ? "This exact script" : "Preview truncated — the full script"} gets narrated in the cloned voice and ` +
+          "assembled into a video after approval (that spends ElevenLabs and Pictory minutes). " +
+          "The finished video comes back as its own approval with a preview link — nothing publishes until then.",
       ),
     ];
   }

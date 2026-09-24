@@ -43,6 +43,16 @@ function summarize(p: Proposal): string {
       return `Open ticket: ${String(d.subject ?? "")}${d.customer ? ` (from ${String(d.customer)})` : ""}`;
     case "note.append":
       return "Add note:";
+    case "whatsapp.message":
+      return "WhatsApp message (hand-off to Slack after approval):";
+    case "video.script":
+      return `Video script — "${String(d.title ?? "")}" (narration + assembly start after approval):`;
+    case "social.post": {
+      const platforms = Array.isArray(d.platforms) ? d.platforms.map(String).join(", ") : "";
+      return d.kind === "video"
+        ? `Publish VIDEO "${String(d.title ?? "")}" to ${platforms} — watch it below before approving:`
+        : `Publish to ${platforms}:`;
+    }
     default:
       // Unknown action: still shown (never hidden), just raw. apply_proposal
       // will refuse it with a clear error if approved.
@@ -172,8 +182,18 @@ export function ApprovalsCard({ ventureId }: { ventureId?: string }) {
             <li key={p.id} className="approval-item">
               <div className="approval-body">
                 <p className="approval-desc">{summarize(p)}</p>
-                {p.action === "note.append" && (
+                {p.action === "social.post" && typeof p.payload.preview_url === "string" && (
+                  <p className="approval-payload">
+                    <a href={p.payload.preview_url} target="_blank" rel="noreferrer">
+                      ▶ Watch the video
+                    </a>
+                  </p>
+                )}
+                {(p.action === "note.append" || p.action === "whatsapp.message" || p.action === "social.post") && (
                   <p className="approval-payload prewrap">{String(p.payload.text ?? "")}</p>
+                )}
+                {p.action === "video.script" && (
+                  <p className="approval-payload prewrap">{String(p.payload.script ?? "")}</p>
                 )}
                 <p className="muted approval-meta">
                   {!ventureId && p.ventures ? `${p.ventures.name} · ` : ""}

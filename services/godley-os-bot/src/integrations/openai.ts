@@ -67,20 +67,45 @@ Rules:
 - The final line is mandatory and must appear verbatim: "Analysis only — not financial advice. Trade your own plan."`;
 
 export async function frameForWhatsApp(briefText: string): Promise<string> {
-  return resolveAiProvider() === "direct" ? frameDirect(briefText) : frameViaOpenRouter(briefText);
+  return completeFraming({ system: FRAMING_SYSTEM_PROMPT, user: briefText, maxTokens: FRAMING_MAX_TOKENS, label: "framing" });
+}
+
+// The framing agent's second job (video phase): rewrite approved text as the
+// spoken script of a short video. Same model, same provider paths, its own
+// TUNE ME prompt (src/lib/video-script.ts). The user turn carries the source
+// text plus the venture's call-to-action so the script can end on it.
+export async function writeVideoScript(args: { system: string; sourceText: string; cta: string }): Promise<string> {
+  const user = `SOURCE TEXT:\n${args.sourceText.trim()}\n\nCALL TO ACTION (say this, in these words, as the last line):\n${args.cta.trim()}`;
+  return completeFraming({ system: args.system, user, maxTokens: VIDEO_SCRIPT_MAX_TOKENS, label: "video-script" });
+}
+
+// ~90 seconds of speech is ~230 words; capped with headroom.
+const VIDEO_SCRIPT_MAX_TOKENS = 700;
+
+interface FramingCall {
+  system: string;
+  user: string;
+  maxTokens: number;
+  label: string;
+}
+
+// One system message + one user message → trimmed text, on whichever
+// provider path is configured. Shared by both framing jobs.
+async function completeFraming(call: FramingCall): Promise<string> {
+  return resolveAiProvider() === "direct" ? frameDirect(call) : frameViaOpenRouter(call);
 }
 
 // OpenRouter path (default): same two messages, the OpenRouter slug.
-async function frameViaOpenRouter(briefText: string): Promise<string> {
+async function frameViaOpenRouter(call: FramingCall): Promise<string> {
   const reply = await chatCompletion({
     model: FRAMING_MODEL_OPENROUTER,
     messages: [
-      { role: "system", content: FRAMING_SYSTEM_PROMPT },
-      { role: "user", content: briefText },
+      { role: "system", content: call.system },
+      { role: "user", content: call.user },
     ],
-    maxTokens: FRAMING_MAX_TOKENS,
+    maxTokens: call.maxTokens,
     timeoutMs: FRAMING_TIMEOUT_MS,
-    label: "framing",
+    label: call.label,
   });
   if (!reply.content || !reply.content.trim()) {
     throw new Error("OpenRouter returned an empty completion");
@@ -89,7 +114,7 @@ async function frameViaOpenRouter(briefText: string): Promise<string> {
 }
 
 // Direct path (AI_PROVIDER=direct): the OpenAI chat-completions API as before.
-async function frameDirect(briefText: string): Promise<string> {
+async function frameDirect(call: FramingCall): Promise<string> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
 
@@ -105,10 +130,10 @@ async function frameDirect(briefText: string): Promise<string> {
       },
       body: JSON.stringify({
         model: FRAMING_MODEL,
-        max_tokens: FRAMING_MAX_TOKENS,
+        max_tokens: call.maxTokens,
         messages: [
-          { role: "system", content: FRAMING_SYSTEM_PROMPT },
-          { role: "user", content: briefText },
+          { role: "system", content: call.system },
+          { role: "user", content: call.user },
         ],
       }),
       signal: controller.signal,

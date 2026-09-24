@@ -45,3 +45,9 @@ services:
       # when this key is present).
       - key: OPENROUTER_API_KEY
         sync: false
+      # Video pipeline (phase 3): narration and assembly, spent only after a
+      # video.script approval.
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: PICTORY_API_KEY
+        sync: false
