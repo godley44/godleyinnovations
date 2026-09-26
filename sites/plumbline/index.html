@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Social media and missed-call text-back for home service businesses in Anne Arundel County. Founding rate $697/mo for the first three clients.">
+  <title>Plumbline Social</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap">
+  <style>
+  :root{
+    --bg:#FAF9F7;
+    --surface:#FFFFFF;
+    --surface-2:#F1EFEA;
+    --border:#DFDBD2;
+    --ink:#191D23;
+    --slate:#5A6472;
+    --brass:#8F6420;
+    --brass-soft:#F5EBD9;
+    --rule:#C9B999;
+    --green:#1F7A4D;
+    --green-soft:#E4F3EB;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#14181E;
+      --surface:#1C2129;
+      --surface-2:#232932;
+      --border:#2E3641;
+      --ink:#EDEFF2;
+      --slate:#9AA4B2;
+      --brass:#D9A65C;
+      --brass-soft:rgba(217,166,92,0.12);
+      --rule:#6B5734;
+      --green:#4FC98A;
+      --green-soft:rgba(79,201,138,0.12);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14181E;
+    --surface:#1C2129;
+    --surface-2:#232932;
+    --border:#2E3641;
+    --ink:#EDEFF2;
+    --slate:#9AA4B2;
+    --brass:#D9A65C;
+    --brass-soft:rgba(217,166,92,0.12);
+    --rule:#6B5734;
+    --green:#4FC98A;
+    --green-soft:rgba(79,201,138,0.12);
+    color-scheme: dark;
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:'Barlow', -apple-system, sans-serif;
+    font-size:16px;
+    line-height:1.6;
+    margin:0;
+    padding-bottom:86px;
+  }
+  h1,h2,h3{font-family:'Archivo', sans-serif; text-wrap:balance; margin:0; line-height:1.12; letter-spacing:-0.015em;}
+  p{margin:0;}
+  a{color:inherit;}
+  .wrap{max-width:680px; margin-inline:auto; padding-inline:22px;}
+
+  .kicker{
+    font-size:12.5px;
+    font-weight:600;
+    letter-spacing:0.13em;
+    text-transform:uppercase;
+    color:var(--brass);
+  }
+
+  /* Hero */
+  .hero{padding-block:44px 30px; display:flex; flex-direction:column; align-items:center; gap:22px; text-align:center;}
+  .bob{width:32px; height:auto; flex-shrink:0;}
+  .hero h1{font-size:clamp(32px,8vw,48px); font-weight:800;}
+  .hero .lede{font-size:clamp(17px,4vw,19px); color:var(--slate); max-width:36ch;}
+  .hero .lede b{color:var(--ink); font-weight:600;}
+
+  .btn{
+    display:inline-block;
+    background:var(--ink);
+    color:var(--bg);
+    font-family:'Archivo', sans-serif;
+    font-weight:700;
+    font-size:16.5px;
+    padding:15px 30px;
+    border-radius:6px;
+    text-decoration:none;
+    border:2px solid var(--ink);
+    text-align:center;
+  }
+  .btn:hover{background:transparent; color:var(--ink);}
+  .btn-note{font-size:14.5px; color:var(--slate);}
+  .btn-note b{color:var(--brass); font-weight:600;}
+  .cta-row{display:flex; flex-direction:column; align-items:center; gap:11px; width:100%;}
+
+  /* Trust strip */
+  .trust{
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:center;
+    gap:8px 10px;
+    padding-block:4px 30px;
+  }
+  .trust span{
+    font-size:12.5px;
+    font-weight:600;
+    letter-spacing:0.03em;
+    color:var(--slate);
+    background:var(--surface-2);
+    border-radius:999px;
+    padding:6px 13px;
+  }
+  .trust span.hl{color:var(--brass); background:var(--brass-soft);}
+
+  /* Sections */
+  section{padding-block:36px;}
+  .sec-head{display:flex; align-items:center; gap:12px; margin-bottom:20px;}
+  .sec-head .tick{width:3px; height:26px; background:var(--brass); border-radius:2px; flex-shrink:0;}
+  .sec-head h2{font-size:clamp(23px,5.5vw,29px); font-weight:700;}
+
+  .problem{display:flex; flex-direction:column; gap:15px;}
+  .problem .line{
+    display:flex; gap:13px; align-items:flex-start;
+    font-size:17px; color:var(--slate);
+    padding-bottom:15px; border-bottom:1px solid var(--border);
+  }
+  .problem .line:last-child{border-bottom:none; padding-bottom:0;}
+  .problem .num{font-family:'Archivo',sans-serif; font-weight:700; font-size:13px; color:var(--brass); padding-top:4px; flex-shrink:0;}
+  .problem b{color:var(--ink); font-weight:600;}
+
+  /* About / operator */
+  .operator{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:24px 22px;
+    display:flex;
+    flex-direction:column;
+    gap:16px;
+  }
+  .op-top{display:flex; gap:16px; align-items:center;}
+  .op-photo{
+    width:78px; height:78px; border-radius:50%;
+    background:var(--surface-2);
+    border:2px dashed var(--brass);
+    display:flex; align-items:center; justify-content:center;
+    text-align:center; font-size:10px; line-height:1.25; color:var(--brass);
+    font-weight:600; letter-spacing:0.04em; text-transform:uppercase;
+    flex-shrink:0; padding:6px;
+  }
+  .op-name{font-family:'Archivo',sans-serif; font-weight:700; font-size:20px;}
+  .op-role{font-size:14.5px; color:var(--slate); margin-top:2px;}
+  .operator p{font-size:16.5px; color:var(--slate);}
+  .operator p b{color:var(--ink); font-weight:600;}
+
+  /* Offer card */
+  .offer{
+    background:var(--surface);
+    border:2px solid var(--ink);
+    border-radius:12px;
+    padding:26px 22px;
+    display:flex; flex-direction:column; gap:20px;
+  }
+  .price-row{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;}
+  .price{font-family:'Archivo',sans-serif; font-weight:800; font-size:46px; line-height:1;}
+  .per{font-size:17px; color:var(--slate); font-weight:500;}
+  .was{font-size:15px; color:var(--slate);}
+  .was s{opacity:0.75;}
+  .includes{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:13px;}
+  .includes li{display:flex; gap:11px; align-items:flex-start; font-size:16px;}
+  .includes .mark{color:var(--brass); font-weight:700; flex-shrink:0; line-height:1.5;}
+  .includes b{font-weight:600;}
+  .includes span.sub{color:var(--slate);}
+
+  .guarantee{
+    background:var(--green-soft);
+    border-left:3px solid var(--green);
+    border-radius:0 8px 8px 0;
+    padding:15px 17px;
+    font-size:15.5px; line-height:1.55;
+  }
+  .guarantee b{font-weight:700; color:var(--green);}
+  .trade{
+    background:var(--brass-soft);
+    border-left:3px solid var(--brass);
+    border-radius:0 8px 8px 0;
+    padding:15px 17px;
+    font-size:15.5px; line-height:1.55;
+  }
+  .trade b{font-weight:600;}
+  .anchor-note{font-size:15px; color:var(--slate); text-align:center;}
+
+  /* 30 days */
+  .steps{display:flex; flex-direction:column; gap:14px;}
+  .step{
+    display:flex; gap:14px; align-items:flex-start;
+    background:var(--surface-2); border-radius:10px; padding:15px 17px;
+  }
+  .step .when{
+    font-family:'Archivo',sans-serif; font-weight:700; font-size:12px;
+    letter-spacing:0.05em; text-transform:uppercase; color:var(--brass);
+    flex-shrink:0; width:62px; padding-top:3px;
+  }
+  .step .what{font-size:16px;}
+  .step .what b{font-weight:600;}
+  .step .what span{color:var(--slate); display:block; font-size:15px; margin-top:2px;}
+
+  /* Fit */
+  .fit-grid{display:grid; grid-template-columns:1fr; gap:14px;}
+  @media (min-width:600px){ .fit-grid{grid-template-columns:1fr 1fr;} }
+  .fit{background:var(--surface-2); border-radius:10px; padding:18px 20px; display:flex; flex-direction:column; gap:10px;}
+  .fit h3{font-size:14.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase;}
+  .fit.yes h3{color:var(--brass);}
+  .fit.no h3{color:var(--slate);}
+  .fit ul{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px; font-size:15.5px; color:var(--slate);}
+  .fit li{display:flex; gap:9px;}
+  .fit li::before{content:"—"; color:var(--rule); flex-shrink:0;}
+
+  /* FAQ */
+  .faq{display:flex; flex-direction:column;}
+  .qa{border-bottom:1px solid var(--border); padding-block:17px;}
+  .qa:first-child{border-top:1px solid var(--border);}
+  .qa h3{font-size:17px; font-weight:700; margin-bottom:6px;}
+  .qa p{font-size:16px; color:var(--slate);}
+
+  /* Mid CTA */
+  .midcta{display:flex; flex-direction:column; align-items:center; gap:10px; padding-block:8px 4px;}
+
+  /* Booking */
+  .book{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:26px 22px; text-align:center;
+    display:flex; flex-direction:column; align-items:center; gap:16px;
+  }
+  .book h2{font-size:clamp(24px,6vw,32px); font-weight:800;}
+  .book p{color:var(--slate); max-width:38ch;}
+  .contact{display:flex; flex-direction:column; gap:6px; font-size:16px;}
+  .contact .lbl{font-size:11.5px; letter-spacing:0.12em; text-transform:uppercase; color:var(--slate); font-weight:600;}
+  .contact .val{font-family:'Archivo',sans-serif; font-weight:600; font-size:18px; user-select:all; text-decoration:none;}
+  .contact .val:hover{color:var(--brass);}
+
+  .todo{
+    border:1px dashed var(--brass); border-radius:8px; background:var(--brass-soft);
+    padding:13px 15px; font-size:13.5px; line-height:1.5; text-align:left;
+  }
+  .todo b{font-weight:700; color:var(--brass);}
+
+  /* Sticky bar */
+  .sticky{
+    position:fixed; left:0; right:0; bottom:0;
+    background:var(--surface);
+    border-top:1px solid var(--border);
+    padding:11px 16px;
+    padding-bottom:calc(11px + env(safe-area-inset-bottom, 0px));
+    display:flex; gap:10px; align-items:center; justify-content:center;
+    z-index:50;
+  }
+  .sticky a{
+    flex:1 1 auto; max-width:250px;
+    font-family:'Archivo',sans-serif; font-weight:700; font-size:15px;
+    padding:12px 16px; border-radius:6px; text-decoration:none; text-align:center;
+  }
+  .sticky .primary{background:var(--ink); color:var(--bg);}
+  .sticky .secondary{background:transparent; color:var(--ink); border:1.5px solid var(--border); max-width:130px;}
+
+  footer{
+    padding-block:32px 40px; text-align:center;
+    font-size:13.5px; color:var(--slate);
+    border-top:1px solid var(--border); margin-top:28px;
+  }
+  footer .mark{font-family:'Archivo',sans-serif; font-weight:700; color:var(--ink); font-size:15px; letter-spacing:0.02em;}
+  footer .verse{margin-top:8px; font-style:italic;}
+  </style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="hero">
+    <svg class="bob" viewBox="0 0 40 116" role="img" aria-label="A plumb bob hanging on a line">
+      <line x1="20" y1="2" x2="20" y2="74" style="stroke:var(--rule); stroke-width:2"/>
+      <path d="M20 74 L31 88 L20 114 L9 88 Z" style="fill:var(--brass)"/>
+      <line x1="20" y1="88" x2="20" y2="114" style="stroke:var(--bg); stroke-width:1.5; opacity:0.35"/>
+    </svg>
+
+    <div class="kicker">HVAC · Plumbing · Roofing · Electrical</div>
+
+    <h1>Your work, posted every week. So the next customer calls you.</h1>
+
+    <p class="lede">You text me photos from the job. I handle Facebook, Instagram, the ads, the messages — and the calls you miss. <b>About ten minutes a week of your time.</b></p>
+
+    <div class="cta-row">
+      <a class="btn" href="#book">Book a 15-minute call</a>
+      <p class="btn-note">Three founding clients at <b>$697/mo</b> · one per trade, per area</p>
+    </div>
+  </div>
+
+  <div class="trust">
+    <span class="hl">Veteran owned</span>
+    <span>Anne Arundel County</span>
+    <span>You own your accounts</span>
+    <span>30-day out</span>
+  </div>
+
+  <section>
+    <div class="sec-head"><span class="tick"></span><h2>You already know the problem</h2></div>
+    <div class="problem">
+      <div class="line"><span class="num">01</span><span>People check you out online before they call. <b>Right now they find a page you last touched in March</b> — and they draw a conclusion about how you run the rest of it.</span></div>
+      <div class="line"><span class="num">02</span><span>The outfit down the road does worse work than you. <b>They show up online and you don't</b>, so they get the call you should have gotten.</span></div>
+      <div class="line"><span class="num">03</span><span>You've been sold this before. <b>Somebody took $1,500 a month and sent you a report about impressions</b>, and you never saw a single job come out of it.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="tick"></span><h2>Who you'd be dealing with</h2></div>
+    <div class="operator">
+      <div class="op-top">
+        <div class="op-photo">Add<br>photo</div>
+        <div>
+          <div class="op-name">Justin</div>
+          <div class="op-role">Army officer, U.S. Army Reserve · Anne Arundel County</div>
+        </div>
+      </div>
+      <p>I'm not an agency and you won't get handed to an account manager. <b>You deal with me, every time.</b></p>
+      <p><b>A plumb line is the oldest tool on any job site.</b> One weight, one string, one honest answer about whether a thing is true. That's the standard I want held to my own work, so it's what I named the company.</p>
+    </div>
+  </section>
+
+  <div class="midcta">
+    <a class="btn" href="#book">Book a 15-minute call</a>
+  </div>
+
+  <section>
+    <div class="sec-head"><span class="tick"></span><h2>What you get</h2></div>
+    <div class="offer">
+      <div>
+        <div class="price-row">
+          <span class="price">$697</span>
+          <span class="per">/ month</span>
+        </div>
+        <div class="was">Founding rate for the first three clients. <s>$997</s> after that.</div>
+      </div>
+
+      <ul class="includes">
+        <li><span class="mark">▸</span><span><b>Facebook and Instagram, run for you.</b> <span class="sub">Setup, posting, the whole thing. You never open the apps unless you want to.</span></span></li>
+        <li><span class="mark">▸</span><span><b>16 posts a month from your real jobs.</b> <span class="sub">Your trucks, your crew, your finished work — never stock photos of somebody else's.</span></span></li>
+        <li><span class="mark">▸</span><span><b>You approve everything before it posts.</b> <span class="sub">A week of posts comes to you in one text. Reply yes, or tell me what to change.</span></span></li>
+        <li><span class="mark">▸</span><span><b>Missed calls get a text back in under a minute.</b> <span class="sub">Your phone rings, nobody picks up, the caller gets a text back before they dial the next guy. About a quarter of calls to shops like yours go unanswered, and almost nobody leaves a voicemail.</span></span></li>
+        <li><span class="mark">▸</span><span><b>Comments and messages handled.</b> <span class="sub">Anything about pricing or scheduling gets forwarded straight to you — I never quote a job in your name.</span></span></li>
+        <li><span class="mark">▸</span><span><b>Ad campaigns built and managed.</b> <span class="sub">You pay Meta directly, on your own card. No markup. Most shops your size start around $300–500/mo, and I'll give you a straight number on the call.</span></span></li>
+        <li><span class="mark">▸</span><span><b>One report a month, in plain English.</b> <span class="sub">Not impressions. How many people messaged, called, or asked for a quote — and how many missed calls we caught before they walked.</span></span></li>
+      </ul>
+
+      <div class="guarantee">
+        <b>First 30 days, no lock.</b> If you don't like how it's going in the first month, tell me and we're done — you owe nothing beyond that month and you keep every account, photo and post we built. The six-month founding rate only starts after you've seen the work.
+      </div>
+
+      <div class="trade">
+        <b>Why it's $697:</b> I'm new at this and I'd rather say it than fake it. Three founding clients get this rate locked for six months — it's the lowest I will ever charge. All I ask back is a straight testimonial if I earn it. If I don't earn it, I don't want it.
+      </div>
+
+      <p class="anchor-note">One extra job a month more than covers this.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="tick"></span><h2>What the first month looks like</h2></div>
+    <div class="steps">
+      <div class="step">
+        <div class="when">Week 1</div>
+        <div class="what"><b>I set up and you barely notice.</b><span>Accounts cleaned up or created in your name, with you as owner. I pull photos you already have on your phone.</span></div>
+      </div>
+      <div class="step">
+        <div class="when">Week 2</div>
+        <div class="what"><b>First posts go out — after you approve them.</b><span>You see the whole week in one text before anything is public.</span></div>
+      </div>
+      <div class="step">
+        <div class="when">Week 4</div>
+        <div class="what"><b>First report, and your call.</b><span>What went out, what came back, and whether you want to keep going. No pressure either way.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="tick"></span><h2>Who this is for</h2></div>
+    <div class="fit-grid">
+      <div class="fit yes">
+        <h3>A fit</h3>
+        <ul>
+          <li>HVAC, plumbing, roofing, electrical</li>
+          <li>Gyms, studios, chiropractors</li>
+          <li>Owner-operated, local, word-of-mouth driven</li>
+          <li>Willing to text photos from the job</li>
+        </ul>
+      </div>
+      <div class="fit no">
+        <h3>Not a fit</h3>
+        <ul>
+          <li>National brands or franchises</li>
+          <li>Anyone who wants to go viral</li>
+          <li>Anyone who won't send photos — I can't invent your work</li>
+          <li>Anyone who needs the phone ringing this week</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="tick"></span><h2>Straight answers</h2></div>
+    <div class="faq">
+      <div class="qa">
+        <h3>Do I see posts before they go out?</h3>
+        <p>Always. A week of posts comes to you in one text. Nothing goes public without a yes from you.</p>
+      </div>
+      <div class="qa">
+        <h3>What do you actually need from me?</h3>
+        <p>Photos and short videos from your jobs — phone quality is the point. Realistically ten minutes a week.</p>
+      </div>
+      <div class="qa">
+        <h3>What's this really going to cost me?</h3>
+        <p>$697 a month to me. Ad spend is separate and goes straight to Meta on your card — you set that number and can change it any time. Nothing else, no setup fee, no markup.</p>
+      </div>
+      <div class="qa">
+        <h3>Am I locked in?</h3>
+        <p>Not for the first 30 days. After that it's six months at the founding rate, because that's how long it takes to have anything honest to measure. Month-to-month after that.</p>
+      </div>
+      <div class="qa">
+        <h3>Do I keep my accounts?</h3>
+        <p>Always. They're in your name with you as owner. I'm added as a manager and removed the day you say so.</p>
+      </div>
+      <div class="qa">
+        <h3>Are you working with my competitor?</h3>
+        <p>No. One client per trade, per service area. If I've taken a plumber in your town, I can't take you — and I'll tell you that on the call instead of wasting your time.</p>
+      </div>
+      <div class="qa">
+        <h3>Can I see what it'd look like first?</h3>
+        <p>Yes. Tell me your business on the call and I'll build you a sample week of posts from your own photos. Free, no obligation, yours to keep either way.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="book">
+    <div class="book">
+      <div class="kicker">Three founding spots</div>
+      <h2>Fifteen minutes</h2>
+      <p>Tell me what you do and what you've already tried. If I can't help you, I'll say so on the call.</p>
+
+      <div class="contact">
+        <span class="lbl">Book a time</span>
+        <a class="val" href="https://example.com/replace-with-your-booking-link">[ your booking link ]</a>
+      </div>
+      <div class="contact">
+        <span class="lbl">Or reach me</span>
+        <a class="val" href="tel:+10000000000">[ your phone ]</a>
+        <a class="val" href="mailto:you@example.com">[ your email ]</a>
+      </div>
+
+      <div class="todo">
+        <b>Before this goes live:</b> swap the booking link, phone and email above (and in the bar at the bottom) for the real ones, and add a photo of yourself in the section above. Everything else is ready to ship.
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="mark">PLUMBLINE</div>
+    <div>Social media management for home service businesses<br>Anne Arundel County, Maryland · A Godley Innovations Studio, LLC company</div>
+    <div class="verse">"Behold, I am setting a plumb line in the midst of my people." — Amos 7:8</div>
+  </footer>
+
+</div>
+
+<div class="sticky">
+  <a class="primary" href="#book">Book 15 minutes</a>
+  <a class="secondary" href="tel:+10000000000">Call</a>
+</div>
+
+</body>
+</html>
